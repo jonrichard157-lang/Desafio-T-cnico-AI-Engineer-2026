@@ -1,0 +1,22 @@
+# Segredos
+.env
+
+# Ambiente Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Artefatos gerados em tempo de execução (banco SQLite, histórico de sessões)
+storage/
+
+# Enunciado do processo seletivo (documento do recrutador, não faz parte do projeto)
+desafio_tecnico_ai_eng_artefact.pdf
+
+# Sistema operacional / editores
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
