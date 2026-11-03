@@ -10,7 +10,7 @@ O agente usa **Claude (Anthropic)** com *tool calling* para decidir, a cada mens
 
 - [x] 1. Setup do projeto (ambiente, dependências, configuração)
 - [x] 2. Ingestão e tratamento dos dados (CSV → SQLite)
-- [ ] 3. Processamento do manual de políticas (PDF → seções)
+- [x] 3. Processamento do manual de políticas (PDF → seções)
 - [ ] 4. Ferramentas (tools) do agente + testes
 - [ ] 5. Agente (prompt de sistema + loop de tool calling)
 - [ ] 6. Interfaces (CLI + API HTTP) e persistência de histórico
@@ -71,6 +71,38 @@ Os CSVs são carregados em um banco **SQLite** (`storage/emporio.db`), gerado po
 | Produto 136 (Ibanez Bass 2X) | `discontinued` com estoque 13 | Indisponível (fora de catálogo) |
 | Pedidos 3 e 20 | Total ≠ soma dos itens a preço atual | Vale o total registrado (preço pode ter mudado ou havia desconto na época) |
 | E-mail `bruno.martins@jmail.com` | Compartilhado por 2 clientes | O e-mail sozinho não basta para identificar o cliente |
+
+## Manual de políticas (retrieval)
+
+O PDF é processado por [`manual.py`](src/emporio_agent/policies/manual.py). Para ver o resultado:
+
+```bash
+uv run python -m emporio_agent.policies.manual
+```
+
+**Estratégia: divisão por seção do próprio documento, sem RAG vetorial.**
+
+- O manual é curto (cerca de 15 mil caracteres) e já vem organizado em 10 seções numeradas (`1.`, `4.1`, ...). Dividir pela própria numeração mantém cada regra completa. Por exemplo, todo o §4.1 (arrependimento) fica num único trecho, o que blocos de tamanho fixo poderiam quebrar ao meio.
+- Uma busca vetorial exigiria um modelo de embeddings (a Anthropic não oferece um) e um banco vetorial, e não traria ganho real para um documento desse tamanho.
+- O resultado é determinístico e auditável: o agente pode citar "§4.1 Direito de Arrependimento".
+
+**Como funciona a extração:**
+
+- O `pypdf` em modo `layout` preserva a posição do texto. Isso permite detectar os títulos (`N.` e `N.N` na coluna 0) e as colunas das tabelas, que viram `Coluna | Coluna`.
+- Cabeçalhos e rodapés de página são removidos e os bullets quebrados em várias linhas são reunidos. Listas que continuam na página seguinte (§7.2) ficam inteiras.
+
+**Duas formas de consulta, que o agente vai usar na próxima etapa:**
+
+1. **Por tópico** (`horario`, `pagamento`, `trocas_devolucoes`, `frete_entrega`, `promocoes`, `garantia`, ...): devolve a seção inteira com as subseções. O tópico é localizado pelo **título** da seção, não pelo número, para resistir a renumerações do manual.
+2. **Por texto livre:** busca por palavras-chave (TF-IDF com normalização de acentos e plurais) nas subseções, para perguntas que não se encaixam num tópico.
+
+**Inconsistências do manual** (o agente será instruído sobre elas):
+
+| Ponto | Conflito | Decisão |
+|---|---|---|
+| Telefone / WhatsApp | §1.2: (67) 3341-4444; §7: (67) 3321-4500 | 3341-4444 como telefone da loja e 3321-4500 como WhatsApp de atendimento (o §7 trata especificamente do canal WhatsApp) |
+| E-mail | Capa: `contato@emporiodamusica.com.br`; §1.2: `contato@empóriodamusica.com.br` | Usar a versão sem acento (domínios com acento são incomuns; o acento parece erro de digitação) |
+| Parcelamento | Tabela §3: "parcela mínima R\$ 100"; §3.1: faixas de R\$ 50 / R\$ 80 / R\$ 100 | Vale o §3.1, que é mais específico |
 
 ## Estrutura do projeto
 
