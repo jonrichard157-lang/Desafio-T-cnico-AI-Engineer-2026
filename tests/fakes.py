@@ -1,4 +1,4 @@
-"""Cliente falso da Anthropic para testes (respostas roteirizadas, sem rede)."""
+"""Fake Anthropic client for tests (scripted responses, no network)."""
 
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ class FakeClient:
         self.messages = self
 
     def create(self, **kwargs):
-        self.requests.append(json.loads(json.dumps(kwargs, default=str)))  # cópia do estado no momento
+        self.requests.append(json.loads(json.dumps(kwargs, default=str)))  # snapshot of the request at call time
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item

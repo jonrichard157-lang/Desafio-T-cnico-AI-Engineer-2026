@@ -1,4 +1,4 @@
-"""Testes do processamento do manual de políticas (PDF -> seções)."""
+"""Tests of the policy manual parsing (PDF -> sections)."""
 
 from __future__ import annotations
 
@@ -40,8 +40,8 @@ def test_headers_and_footers_removed(manual: PolicyManual) -> None:
 
 
 def test_tables_are_preserved(manual: PolicyManual) -> None:
-    assert "Sábado | 09:00 às 13:00" in manual.get_topic("horario")
-    assert "Endereço | Rua 14 de Maio, 3200" in manual.get_topic("sobre_a_loja")
+    assert "Sábado | 09:00 às 13:00" in manual.get_topic("opening_hours")
+    assert "Endereço | Rua 14 de Maio, 3200" in manual.get_topic("about_store")
 
 
 def test_wrapped_bullets_are_joined(manual: PolicyManual) -> None:
@@ -56,7 +56,7 @@ def test_numbered_list_spanning_pages(manual: PolicyManual) -> None:
 
 
 def test_topic_includes_subsections(manual: PolicyManual) -> None:
-    text = manual.get_topic("trocas_devolucoes")
+    text = manual.get_topic("returns_exchanges")
     assert "## 4.1 Direito de Arrependimento" in text
     assert "## 4.4 Itens Não Elegíveis para Troca" in text
 

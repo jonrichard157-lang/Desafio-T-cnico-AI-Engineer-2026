@@ -1,4 +1,7 @@
-"""Testes do prompt e do loop de tool calling, com um cliente falso (sem chamar a API)."""
+"""Tests of the prompt and the tool-calling loop, with a fake client (no API calls).
+
+Customer messages in the tests are in Portuguese, as real customers would write them.
+"""
 
 from __future__ import annotations
 
@@ -26,32 +29,34 @@ def make_agent(executor, settings, responses, **kwargs) -> tuple[Agent, FakeClie
 # --------------------------------------------------------------------------- #
 def test_prompt_has_core_rules() -> None:
     lowered = STATIC_PROMPT.lower()
-    assert "amigo" in lowered
-    assert "nunca diga que um produto está disponível" in lowered
-    for accessory in ("cordas", "cabos", "pedais"):
+    assert "friend who really knows music" in lowered
+    assert "reply in **the customer's language**" in lowered and "brazilian portuguese" in lowered
+    assert "always write tool search terms" in lowered  # catalog/manual are in Portuguese
+    assert "never say a product is available" in lowered
+    for accessory in ("strings", "cables", "pedals"):
         assert accessory in lowered
-    assert "5%" in STATIC_PROMPT and "não acumula com promoção" in lowered
-    # divergências do manual resolvidas no prompt (ver README)
+    assert "5%" in STATIC_PROMPT and "does not stack with a promotion" in lowered
+    # manual inconsistencies resolved in the prompt (see README)
     assert "(67) 3321-4500" in STATIC_PROMPT and "contato@emporiodamusica.com.br" in STATIC_PROMPT
 
 
 def test_system_caches_static_part_and_adds_context() -> None:
-    system = build_system(datetime(2026, 3, 14, 15, 30), ("Loja A - (67) 1111-1111",))
+    system = build_system(datetime(2026, 3, 14, 15, 30), ("Store A - (67) 1111-1111",))
     assert system[0]["text"] == STATIC_PROMPT
     assert system[0]["cache_control"] == {"type": "ephemeral"}
     assert "cache_control" not in system[1]
-    assert "sábado, 14/03/2026, 15:30" in system[1]["text"]
-    assert "Loja A - (67) 1111-1111" in system[1]["text"]
+    assert "Saturday, 14/03/2026 (dd/mm/yyyy), 15:30" in system[1]["text"]
+    assert "Store A - (67) 1111-1111" in system[1]["text"]
 
 
 def test_context_without_partners_forbids_inventing_stores() -> None:
     block = build_context_block(datetime(2026, 3, 10, 10, 0))
-    assert "Não há lojas parceiras" in block
-    assert "terça-feira" in block
+    assert "no registered partner stores" in block
+    assert "Tuesday" in block
 
 
 # --------------------------------------------------------------------------- #
-# Loop de tool calling
+# Tool-calling loop
 # --------------------------------------------------------------------------- #
 def test_plain_answer_without_tools(executor, settings) -> None:
     agent, client = make_agent(executor, settings, [response(text("Oi! Como posso ajudar?"))])
@@ -61,26 +66,26 @@ def test_plain_answer_without_tools(executor, settings) -> None:
     assert reply.tool_calls == []
     assert [m["role"] for m in reply.messages] == ["user", "assistant"]
     request = client.requests[0]
-    assert request["model"] == "modelo-teste"
+    assert request["model"] == "test-model"
     assert {t["name"] for t in request["tools"]} == {t.name for t in ALL_TOOLS}
-    assert "Loja Parceira X" in request["system"][1]["text"]
+    assert "Partner Store X" in request["system"][1]["text"]
 
 
 def test_tool_round_trip(executor, settings) -> None:
     agent, client = make_agent(executor, settings, [
-        response(text("Vou ver aqui!"), tool_use("t1", "buscar_produtos", {"categoria": "Violões"}), stop="tool_use"),
+        response(text("Vou ver aqui!"), tool_use("t1", "search_products", {"category": "Violões"}), stop="tool_use"),
         response(text("Achei estas opções...")),
     ])
     reply = agent.reply("tem violão?")
 
     assert reply.text == "Achei estas opções..."
-    assert [c.name for c in reply.tool_calls] == ["buscar_produtos"]
+    assert [c.name for c in reply.tool_calls] == ["search_products"]
     assert not reply.tool_calls[0].is_error
 
-    # 2ª chamada recebe o tool_use e o tool_result com o JSON real da ferramenta
+    # the 2nd call receives the tool_use and the tool_result with the tool's real JSON
     second = client.requests[1]["messages"]
-    assert second[1]["content"][1] == {"type": "tool_use", "id": "t1", "name": "buscar_produtos",
-                                       "input": {"categoria": "Violões"}}
+    assert second[1]["content"][1] == {"type": "tool_use", "id": "t1", "name": "search_products",
+                                       "input": {"category": "Violões"}}
     result = second[2]["content"][0]
     assert result["type"] == "tool_result" and result["tool_use_id"] == "t1" and result["is_error"] is False
     assert "Violões" in result["content"]
@@ -90,8 +95,8 @@ def test_tool_round_trip(executor, settings) -> None:
 def test_parallel_tool_calls_answered_together(executor, settings) -> None:
     agent, client = make_agent(executor, settings, [
         response(
-            tool_use("a", "consultar_politicas", {"topico": "horario"}),
-            tool_use("b", "consultar_politicas", {"topico": "pagamento"}),
+            tool_use("a", "lookup_policy", {"topic": "opening_hours"}),
+            tool_use("b", "lookup_policy", {"topic": "payment"}),
             stop="tool_use",
         ),
         response(text("Funcionamos ... e aceitamos PIX ...")),
@@ -104,7 +109,7 @@ def test_parallel_tool_calls_answered_together(executor, settings) -> None:
 
 def test_invalid_tool_arguments_return_error_to_model(executor, settings) -> None:
     agent, client = make_agent(executor, settings, [
-        response(tool_use("t1", "buscar_produtos", {}), stop="tool_use"),
+        response(tool_use("t1", "search_products", {}), stop="tool_use"),
         response(text("Me conta o que você procura?")),
     ])
     reply = agent.reply("quero algo")
@@ -136,7 +141,7 @@ def test_api_error_returns_fallback_and_keeps_history(executor, settings) -> Non
 
 
 def test_tool_round_limit(executor, settings) -> None:
-    loop = response(tool_use("t", "consultar_politicas", {"topico": "horario"}), stop="tool_use")
+    loop = response(tool_use("t", "lookup_policy", {"topic": "opening_hours"}), stop="tool_use")
     agent, client = make_agent(executor, settings, [loop, loop, loop], max_tool_rounds=2)
     reply = agent.reply("?")
 

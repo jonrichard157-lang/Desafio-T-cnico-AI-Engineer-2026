@@ -1,4 +1,7 @@
-"""Testes da sessão com histórico em memória e do loop do CLI (cliente falso, sem rede)."""
+"""Tests of the in-memory session history and the CLI loop (fake client, no network).
+
+Customer messages are in Portuguese, as real customers would write them.
+"""
 
 from __future__ import annotations
 
@@ -14,12 +17,12 @@ def make_session(executor, settings, responses) -> tuple[ChatSession, FakeClient
 
 
 # --------------------------------------------------------------------------- #
-# Sessão / histórico
+# Session / history
 # --------------------------------------------------------------------------- #
 def test_follow_up_question_sees_previous_tool_result(executor, settings) -> None:
-    """'E quanto fica à vista no PIX?' precisa do produto e dos dados do turno anterior."""
+    """'E quanto fica à vista no PIX?' ("and how much with PIX?") needs the product and data from the previous turn."""
     session, client = make_session(executor, settings, [
-        response(tool_use("t1", "detalhes_produto", {"produto_id": 81}), stop="tool_use"),
+        response(tool_use("t1", "get_product_details", {"product_id": 81}), stop="tool_use"),
         response(text("O Yamaha C40 sai por R$ 599,90.")),
         response(text("No PIX fica R$ 569,90.")),
     ])
@@ -48,7 +51,7 @@ def test_reset_clears_history(executor, settings) -> None:
 def test_failed_turn_is_not_kept(executor, settings) -> None:
     session, _ = make_session(executor, settings, [response(text("Oi!")), response(stop="end_turn")])
     session.send("oi")
-    reply = session.send("???")  # resposta vazia -> fallback
+    reply = session.send("???")  # empty reply -> fallback
 
     assert reply.error
     assert session.turns == 1
@@ -56,16 +59,16 @@ def test_failed_turn_is_not_kept(executor, settings) -> None:
 
 def test_trim_history_cuts_at_user_text_turn() -> None:
     turn_with_tool = [
-        {"role": "user", "content": "pergunta"},
+        {"role": "user", "content": "question"},
         {"role": "assistant", "content": [{"type": "tool_use", "id": "x", "name": "n", "input": {}}]},
         {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "{}"}]},
-        {"role": "assistant", "content": [{"type": "text", "text": "resposta"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "answer"}]},
     ]
-    history = turn_with_tool * 5  # 20 mensagens
+    history = turn_with_tool * 5  # 20 messages
     trimmed = trim_history(history, limit=7)
 
     assert len(trimmed) == 4
-    assert trimmed[0] == {"role": "user", "content": "pergunta"}
+    assert trimmed[0] == {"role": "user", "content": "question"}
     assert trim_history(history, limit=50) is history
 
 
@@ -86,7 +89,7 @@ def scripted(lines: list[str]):
 
 def test_cli_multi_turn_conversation(executor, settings) -> None:
     session, client = make_session(executor, settings, [
-        response(tool_use("t1", "detalhes_produto", {"produto_id": 81}), stop="tool_use"),
+        response(tool_use("t1", "get_product_details", {"product_id": 81}), stop="tool_use"),
         response(text("Temos sim! R$ 599,90.")),
         response(text("No PIX, R$ 569,90.")),
     ])
@@ -96,8 +99,8 @@ def test_cli_multi_turn_conversation(executor, settings) -> None:
     joined = "\n".join(out)
     assert "Empório: Temos sim! R$ 599,90." in joined
     assert "Empório: No PIX, R$ 569,90." in joined
-    assert "[tool] detalhes_produto" in joined
-    assert len(client.requests) == 3  # linha vazia e /sair não chamam o modelo
+    assert "[tool] get_product_details" in joined
+    assert len(client.requests) == 3  # an empty line and /sair do not call the model
     assert out[-1].startswith("Até mais")
 
 
@@ -110,4 +113,4 @@ def test_cli_commands(executor, settings) -> None:
     assert "/novo" in joined and "(nova conversa iniciada)" in joined
     assert client.requests[-1]["messages"] == [{"role": "user", "content": "oi"}]
     assert "[tool]" not in joined
-    assert "Até mais" in out[-1]  # EOF encerra sem erro
+    assert "Até mais" in out[-1]  # EOF exits without an error

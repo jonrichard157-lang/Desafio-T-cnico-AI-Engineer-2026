@@ -1,4 +1,4 @@
-"""Utilitários de normalização de texto usados na carga e nas buscas."""
+"""Text normalization helpers used when loading data and searching."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import unicodedata
 
 
 def normalize_text(value: str | None) -> str:
-    """Minúsculas, sem acentos e com espaços simples — para buscas tolerantes.
+    """Lowercase, accent-free, single-spaced text for forgiving searches.
 
     >>> normalize_text("  Violão  Clássico ")
     'violao classico'
@@ -20,7 +20,7 @@ def normalize_text(value: str | None) -> str:
 
 
 def only_digits(value: str | None) -> str:
-    """Mantém apenas dígitos — usado para comparar telefones em formatos diferentes.
+    """Keep digits only, to match phone numbers typed in different formats.
 
     >>> only_digits("(67) 99812-3456")
     '67998123456'

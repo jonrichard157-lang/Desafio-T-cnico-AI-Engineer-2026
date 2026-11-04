@@ -1,10 +1,12 @@
-"""Ferramentas de catálogo: busca de produtos e detalhes de um produto.
+"""Catalog tools: product search and details of a single product.
 
-Regras aplicadas aqui (e não no prompt), para que o modelo nunca precise "calcular":
-  * disponibilidade (status + estoque) e o motivo da indisponibilidade;
-  * preço promocional vigente x preço de tabela x preço no PIX (não cumulativos);
-  * parcelamento máximo sem juros conforme o manual (§3.1);
-  * alternativas semelhantes quando o produto está indisponível (§7.3).
+Rules applied here (not in the prompt), so the model never has to "calculate":
+  * availability (status + stock) and the reason a product is unavailable;
+  * current promotional price x list price x PIX price (they do not stack);
+  * maximum interest-free installments according to the manual (section 3.1);
+  * similar alternatives when a product is unavailable (section 7.3).
+
+The catalog is in Portuguese, so category names and search keywords are Portuguese.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from pydantic import BaseModel, Field, model_validator
 from emporio_agent.text import normalize_text
 from emporio_agent.tools.base import Tool, ToolContext, brl
 
+# Category names exactly as stored in the catalog (Portuguese).
 CategoryName = Literal[
     "Guitarras",
     "Baixos",
@@ -30,12 +33,20 @@ CategoryName = Literal[
     "Ukuleles",
 ]
 
+_CATEGORY_HELP = (
+    "Catalog category (names are in Portuguese): 'Violões' = acoustic/classical guitars; 'Guitarras' = electric "
+    "guitars; 'Baixos' = bass guitars; 'Baterias e Percussão' = drums and percussion; 'Teclados e Pianos' = "
+    "keyboards and pianos; 'Instrumentos de Sopro (Madeiras)' = woodwinds; 'Instrumentos de Sopro (Metais)' = "
+    "brass; 'Cordas Orquestrais' = orchestral strings; 'Ukuleles' = ukuleles."
+)
+
+# Portuguese stopwords, because customers' search terms are in Portuguese.
 _STOPWORDS = set("a o e de da do das dos um uma para com sem que tem voces vcs algum alguma".split())
 
 _STATUS_LABEL = {
-    "active": "ativo",
-    "discontinued": "descontinuado (fora de catálogo)",
-    "coming_soon": "em breve (lançamento ainda não disponível para venda)",
+    "active": "active",
+    "discontinued": "discontinued (no longer in the catalog)",
+    "coming_soon": "coming soon (launch not yet available for sale)",
 }
 
 
@@ -43,7 +54,7 @@ _STATUS_LABEL = {
 # Helpers
 # --------------------------------------------------------------------------- #
 def _token_variants(token: str) -> set[str]:
-    """Variações simples de singular/plural em português: violão/violões, pedal/pedais."""
+    """Simple Portuguese singular/plural variants: violão/violões, pedal/pedais."""
     variants = {token}
     if token.endswith("oes"):
         variants.add(token[:-3] + "ao")
@@ -69,95 +80,95 @@ def _token_clause(token: str) -> tuple[str, list[str]]:
 
 
 def installments(price: float) -> dict:
-    """Maior parcelamento sem juros permitido pelo manual (§3.1).
+    """Largest interest-free installment plan allowed by the manual (section 3.1).
 
-    Até 3x: parcela >= R$ 50,00 | 4x a 6x: parcela >= R$ 80,00 | 7x a 12x: parcela >= R$ 100,00.
+    Up to 3x: installment >= R$ 50.00 | 4x to 6x: >= R$ 80.00 | 7x to 12x: >= R$ 100.00.
     """
     for n in range(12, 0, -1):
         minimum = 100 if n >= 7 else 80 if n >= 4 else 50
         if n == 1 or price / n >= minimum:
-            return {"parcelas": n, "valor_parcela": brl(round(price / n, 2))}
-    return {"parcelas": 1, "valor_parcela": brl(price)}  # pragma: no cover
+            return {"installments": n, "installment_value": brl(round(price / n, 2))}
+    return {"installments": 1, "installment_value": brl(price)}  # pragma: no cover
 
 
 def availability_label(row: sqlite3.Row) -> str:
     if row["status"] == "discontinued":
-        return "descontinuado"
+        return "discontinued"
     if row["status"] == "coming_soon":
-        return "em breve"
+        return "coming soon"
     if row["stock_quantity"] <= 0:
-        return "esgotado"
+        return "out of stock"
     if row["stock_quantity"] <= 2:
-        return "últimas unidades"
-    return "em estoque"
+        return "last units"
+    return "in stock"
 
 
 def _summary(row: sqlite3.Row) -> dict:
-    """Resumo de um produto para listas de resultados."""
+    """Short product summary used in result lists."""
     item = {
-        "produto_id": row["product_id"],
-        "nome": row["name"],
-        "categoria": row["category_name"],
-        "disponibilidade": availability_label(row),
-        "preco": brl(row["final_price_brl"]),
+        "product_id": row["product_id"],
+        "name": row["name"],
+        "category": row["category_name"],
+        "availability": availability_label(row),
+        "price": brl(row["final_price_brl"]),
     }
     if row["promo_discount_percent"] is not None:
-        item["promocao"] = {
-            "nome": row["promo_description"],
-            "desconto": f"{row['promo_discount_percent']:g}%",
-            "preco_original": brl(row["price_brl"]),
+        item["promotion"] = {
+            "name": row["promo_description"],
+            "discount": f"{row['promo_discount_percent']:g}%",
+            "original_price": brl(row["price_brl"]),
         }
     else:
-        item["preco_pix"] = brl(row["pix_price_brl"])
+        item["pix_price"] = brl(row["pix_price_brl"])
     return item
 
 
 # --------------------------------------------------------------------------- #
-# buscar_produtos
+# search_products
 # --------------------------------------------------------------------------- #
 class SearchProductsInput(BaseModel):
-    termo: str | None = Field(
+    query: str | None = Field(
         default=None,
-        description="Palavras-chave: marca, modelo ou característica (ex.: 'Yamaha', 'nylon', 'eletroacústico', "
-        "'Takamine GD20'). Omitir para listar por categoria/preço.",
+        description="Keywords IN PORTUGUESE, as written in the catalog: brand, model or feature (e.g. 'Yamaha', "
+        "'nylon', 'eletroacústico', 'Takamine GD20'). Omit to list by category/price only.",
     )
-    categoria: CategoryName | None = Field(default=None, description="Filtra por categoria do catálogo.")
-    preco_min: float | None = Field(default=None, ge=0, description="Preço mínimo em reais (considera promoções).")
-    preco_max: float | None = Field(default=None, ge=0, description="Preço máximo em reais (considera promoções).")
-    apenas_disponiveis: bool = Field(
-        default=True, description="Se true (padrão), retorna só produtos ativos e com estoque."
+    category: CategoryName | None = Field(default=None, description=_CATEGORY_HELP)
+    min_price: float | None = Field(default=None, ge=0, description="Minimum price in BRL (promotions included).")
+    max_price: float | None = Field(default=None, ge=0, description="Maximum price in BRL (promotions included).")
+    only_available: bool = Field(
+        default=True, description="If true (default), returns only active products with stock."
     )
-    ordenar_por: Literal["menor_preco", "maior_preco"] = Field(default="menor_preco")
-    limite: int = Field(default=8, ge=1, le=20, description="Máximo de produtos retornados.")
+    sort_by: Literal["price_asc", "price_desc"] = Field(default="price_asc")
+    limit: int = Field(default=8, ge=1, le=20, description="Maximum number of products returned.")
 
     @model_validator(mode="after")
     def _check(self) -> "SearchProductsInput":
-        if not (self.termo or self.categoria or self.preco_min is not None or self.preco_max is not None):
-            raise ValueError("informe ao menos um filtro: termo, categoria, preco_min ou preco_max")
-        if self.preco_min is not None and self.preco_max is not None and self.preco_min > self.preco_max:
-            raise ValueError("preco_min não pode ser maior que preco_max")
+        if not (self.query or self.category or self.min_price is not None or self.max_price is not None):
+            raise ValueError("provide at least one filter: query, category, min_price or max_price")
+        if self.min_price is not None and self.max_price is not None and self.min_price > self.max_price:
+            raise ValueError("min_price cannot be greater than max_price")
         return self
 
 
 def search_products(ctx: ToolContext, params: SearchProductsInput) -> dict:
     base_where, base_args = [], []
-    if params.categoria:
+    if params.category:
         base_where.append("category_name = ?")
-        base_args.append(params.categoria)
-    if params.preco_min is not None:
+        base_args.append(params.category)
+    if params.min_price is not None:
         base_where.append("final_price_brl >= ?")
-        base_args.append(params.preco_min)
-    if params.preco_max is not None:
+        base_args.append(params.min_price)
+    if params.max_price is not None:
         base_where.append("final_price_brl <= ?")
-        base_args.append(params.preco_max)
+        base_args.append(params.max_price)
 
-    tokens = _search_tokens(params.termo)
-    order = "final_price_brl ASC" if params.ordenar_por == "menor_preco" else "final_price_brl DESC"
+    tokens = _search_tokens(params.query)
+    order = "final_price_brl ASC" if params.sort_by == "price_asc" else "final_price_brl DESC"
 
-    # Todas as palavras-chave precisam casar (AND). Não fazemos fallback para
-    # correspondência parcial (OR): em testes, "cordas de guitarra" retornava
-    # violões de 7 cordas — o que levaria o agente a oferecer o produto errado.
-    # Sem resultados, o modelo é orientado a tentar termos mais simples.
+    # Every keyword must match (AND). There is no fallback to partial matching (OR):
+    # in testing, "cordas de guitarra" (guitar strings) returned 7-string guitars,
+    # which would lead the agent to offer the wrong product. With no results, the
+    # model is told to try simpler terms.
     where, args = list(base_where), list(base_args)
     for token in tokens:
         clause, clause_args = _token_clause(token)
@@ -168,38 +179,38 @@ def search_products(ctx: ToolContext, params: SearchProductsInput) -> dict:
 
     available = [r for r in rows if r["is_available"]]
     unavailable = [r for r in rows if not r["is_available"]]
-    selected = available if params.apenas_disponiveis else rows
+    selected = available if params.only_available else rows
 
     result: dict = {
-        "total_encontrado": len(selected),
-        "exibindo": min(len(selected), params.limite),
-        "produtos": [_summary(r) for r in selected[: params.limite]],
+        "total_found": len(selected),
+        "showing": min(len(selected), params.limit),
+        "products": [_summary(r) for r in selected[: params.limit]],
     }
-    if params.apenas_disponiveis and unavailable:
-        result["indisponiveis_correspondentes"] = [
-            {"produto_id": r["product_id"], "nome": r["name"], "situacao": availability_label(r)}
+    if params.only_available and unavailable:
+        result["matching_unavailable"] = [
+            {"product_id": r["product_id"], "name": r["name"], "situation": availability_label(r)}
             for r in unavailable[:5]
         ]
     if not selected:
-        result["aviso"] = (
-            "Nenhum produto disponível com esses filtros. Se usou várias palavras-chave, tente termos mais simples "
-            "(ex.: só a marca ou o tipo). Lembre-se: a loja vende apenas instrumentos musicais (não vende "
-            "acessórios como cordas, cabos, palhetas, pedais, amplificadores ou cases)."
+        result["notice"] = (
+            "No available product matches these filters. If you used several keywords, try simpler ones (e.g. only "
+            "the brand or the type). Remember: the store sells musical instruments only (no accessories such as "
+            "strings, cables, picks, pedals, amplifiers or cases)."
         )
     return result
 
 
 # --------------------------------------------------------------------------- #
-# detalhes_produto
+# get_product_details
 # --------------------------------------------------------------------------- #
 class ProductDetailsInput(BaseModel):
-    produto_id: int | None = Field(default=None, description="ID do produto (obtido em buscar_produtos).")
-    nome: str | None = Field(default=None, description="Nome ou parte do nome do produto, se o ID não for conhecido.")
+    product_id: int | None = Field(default=None, description="Product ID (from search_products).")
+    name: str | None = Field(default=None, description="Product name or part of it, when the ID is not known.")
 
     @model_validator(mode="after")
     def _check(self) -> "ProductDetailsInput":
-        if self.produto_id is None and not (self.nome and self.nome.strip()):
-            raise ValueError("informe produto_id ou nome")
+        if self.product_id is None and not (self.name and self.name.strip()):
+            raise ValueError("provide product_id or name")
         return self
 
 
@@ -216,7 +227,7 @@ def _find_by_name(conn: sqlite3.Connection, name: str) -> list[sqlite3.Row]:
 
 
 def _alternatives(conn: sqlite3.Connection, row: sqlite3.Row, limit: int = 3) -> list[dict]:
-    """Produtos disponíveis da mesma categoria, com preço mais próximo (manual §7.3)."""
+    """Available products of the same category with the closest price (manual section 7.3)."""
     alternatives = conn.execute(
         "SELECT * FROM product_catalog WHERE is_available AND category_id = ? AND product_id <> ? "
         "ORDER BY ABS(final_price_brl - ?) LIMIT ?",
@@ -226,68 +237,67 @@ def _alternatives(conn: sqlite3.Connection, row: sqlite3.Row, limit: int = 3) ->
 
 
 def product_details(ctx: ToolContext, params: ProductDetailsInput) -> dict:
-    if params.produto_id is not None:
-        row = ctx.conn.execute("SELECT * FROM product_catalog WHERE product_id = ?", (params.produto_id,)).fetchone()
+    if params.product_id is not None:
+        row = ctx.conn.execute("SELECT * FROM product_catalog WHERE product_id = ?", (params.product_id,)).fetchone()
         matches = [row] if row else []
     else:
-        matches = _find_by_name(ctx.conn, params.nome or "")
+        matches = _find_by_name(ctx.conn, params.name or "")
 
     if not matches:
         return {
-            "encontrado": False,
-            "mensagem": "Produto não encontrado no catálogo. Use buscar_produtos para procurar opções semelhantes.",
+            "found": False,
+            "message": "Product not found in the catalog. Use search_products to look for similar options.",
         }
     if len(matches) > 1:
         return {
-            "encontrado": False,
-            "mensagem": "Mais de um produto corresponde ao nome informado. Confirme com o cliente qual deles.",
-            "candidatos": [_summary(r) for r in matches[:6]],
+            "found": False,
+            "message": "More than one product matches this name. Confirm with the customer which one they mean.",
+            "candidates": [_summary(r) for r in matches[:6]],
         }
 
     row = matches[0]
     details = _summary(row)
     details.update({
-        "status_catalogo": _STATUS_LABEL.get(row["status"], row["status"]),
-        "disponivel_para_venda": bool(row["is_available"]),
-        "estoque": row["stock_quantity"] if row["is_available"] else 0,
-        "descricao": row["description"],
-        "especificacoes": json.loads(row["specs_json"] or "{}"),
-        "preco_tabela": brl(row["price_brl"]),
-        "parcelamento_maximo_sem_juros": installments(row["final_price_brl"]),
+        "catalog_status": _STATUS_LABEL.get(row["status"], row["status"]),
+        "available_for_sale": bool(row["is_available"]),
+        "stock": row["stock_quantity"] if row["is_available"] else 0,
+        "description": row["description"],
+        "specs": json.loads(row["specs_json"] or "{}"),
+        "list_price": brl(row["price_brl"]),
+        "max_interest_free_installments": installments(row["final_price_brl"]),
     })
     if row["promo_discount_percent"] is not None:
-        details["observacao_pagamento"] = (
-            "Produto em promoção: o desconto de 5% no PIX NÃO se aplica (promoções não são cumulativas)."
+        details["payment_note"] = (
+            "Product on promotion: the 5% PIX discount does NOT apply (promotions do not stack)."
         )
     else:
-        details["observacao_pagamento"] = "Pagamento no PIX tem 5% de desconto sobre o preço de tabela."
+        details["payment_note"] = "Paying with PIX gives a 5% discount on the list price."
     if not row["is_available"]:
-        details["alternativas_disponiveis"] = _alternatives(ctx.conn, row)
+        details["available_alternatives"] = _alternatives(ctx.conn, row)
     return details
 
 
 # --------------------------------------------------------------------------- #
-# Registro
+# Registration
 # --------------------------------------------------------------------------- #
 SEARCH_PRODUCTS = Tool(
-    name="buscar_produtos",
+    name="search_products",
     description=(
-        "Busca instrumentos no catálogo da loja, com preços, promoções vigentes e disponibilidade em tempo real. "
-        "Use SEMPRE que o cliente perguntar sobre produtos, opções, faixas de preço, marcas ou se a loja tem algo. "
-        "Aceita palavras-chave, categoria e faixa de preço. Por padrão retorna apenas itens disponíveis para venda; "
-        "itens correspondentes porém indisponíveis aparecem em 'indisponiveis_correspondentes'."
+        "Searches the store's catalog of instruments, with prices, current promotions and real-time availability. "
+        "ALWAYS use it when the customer asks about products, options, price ranges, brands or whether the store "
+        "has something. Accepts Portuguese keywords, a category and a price range. By default it returns only "
+        "items available for sale; matching but unavailable items are listed in 'matching_unavailable'."
     ),
     input_model=SearchProductsInput,
     handler=search_products,
 )
 
 PRODUCT_DETAILS = Tool(
-    name="detalhes_produto",
+    name="get_product_details",
     description=(
-        "Retorna os detalhes completos de UM produto: preço de tabela, promoção vigente, preço no PIX, parcelamento "
-        "máximo sem juros, estoque, especificações técnicas e, se estiver indisponível, alternativas semelhantes. "
-        "Use quando o cliente perguntar o preço ou detalhes de um modelo específico, ou antes de confirmar "
-        "disponibilidade ou condições de pagamento."
+        "Returns the full details of ONE product: list price, current promotion, PIX price, maximum interest-free "
+        "installments, stock, technical specs and, if unavailable, similar alternatives. Use it when the customer "
+        "asks about the price or details of a specific model, or before confirming availability or payment terms."
     ),
     input_model=ProductDetailsInput,
     handler=product_details,

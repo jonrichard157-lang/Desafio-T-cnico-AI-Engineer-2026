@@ -1,6 +1,6 @@
-"""Ferramentas disponíveis para o agente.
+"""Tools available to the agent.
 
-`build_executor()` monta o executor com as dependências reais (banco + manual).
+`build_executor()` builds the executor with the real dependencies (database + manual).
 """
 
 from __future__ import annotations

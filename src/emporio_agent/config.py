@@ -1,4 +1,4 @@
-"""Configuração central do projeto, lida a partir de variáveis de ambiente / `.env`."""
+"""Central project configuration, read from environment variables / `.env`."""
 
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ class Settings:
 
     @property
     def db_path(self) -> Path:
-        """Banco SQLite com os dados operacionais (produtos, pedidos, ...)."""
+        """SQLite database with the operational data (products, orders, ...)."""
         return self.storage_dir / "emporio.db"
 
     @property
@@ -41,7 +41,7 @@ class Settings:
         return self.data_dir / "políticas_da_loja.pdf"
 
     def now(self) -> datetime:
-        """Data/hora atual no fuso da loja (respeita STORE_TODAY, se definido)."""
+        """Current date/time in the store's timezone (honors STORE_TODAY when set)."""
         tz = ZoneInfo(self.store_timezone)
         current = datetime.now(tz)
         if self.store_today:
@@ -60,7 +60,7 @@ class Settings:
 
 
 def _parse_store_today(raw: str) -> tuple[date | None, time | None]:
-    """'2026-02-20' -> (data, None); '2026-02-20T10:30' -> (data, hora)."""
+    """'2026-02-20' -> (date, None); '2026-02-20T10:30' -> (date, time)."""
     raw = raw.strip()
     if not raw:
         return None, None
@@ -71,7 +71,7 @@ def _parse_store_today(raw: str) -> tuple[date | None, time | None]:
 
 
 def _split_list(raw: str) -> tuple[str, ...]:
-    """'Loja A - (67) 1111-1111; Loja B' -> ('Loja A - (67) 1111-1111', 'Loja B')"""
+    """'Store A - (67) 1111-1111; Store B' -> ('Store A - (67) 1111-1111', 'Store B')"""
     return tuple(item.strip() for item in raw.split(";") if item.strip())
 
 

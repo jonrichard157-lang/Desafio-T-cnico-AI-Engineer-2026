@@ -1,10 +1,13 @@
-"""Interface de terminal: conversa com o agente, com histórico em memória na sessão.
+"""Terminal interface: chat with the agent, keeping the history in memory for the session.
 
-Uso:
-    uv run emporio-chat            # conversa normal
-    uv run emporio-chat --debug    # mostra as ferramentas chamadas a cada resposta
+Usage:
+    uv run emporio-chat            # normal chat
+    uv run emporio-chat --debug    # also shows the tools called for each reply
 
-Comandos durante a conversa: /novo (nova conversa), /ajuda, /sair.
+Chat commands: /novo or /new (new conversation), /ajuda or /help, /sair or /exit.
+
+Text the customer reads (banner, prompts, replies) is in Brazilian Portuguese;
+debug output and errors meant for developers are in English.
 """
 
 from __future__ import annotations
@@ -23,11 +26,13 @@ BANNER = """\
 Digite sua mensagem e tecle Enter. Comandos: /novo (nova conversa), /ajuda, /sair
 """
 HELP = """\
-/novo   começa uma nova conversa (apaga o histórico desta sessão)
-/ajuda  mostra esta ajuda
-/sair   encerra (também: Ctrl+C ou Ctrl+D)
+/novo  (/new)   começa uma nova conversa (apaga o histórico desta sessão)
+/ajuda (/help)  mostra esta ajuda
+/sair  (/exit)  encerra (também: Ctrl+C ou Ctrl+D)
 """
 EXIT_COMMANDS = {"/sair", "/exit", "/quit", "sair"}
+HELP_COMMANDS = {"/ajuda", "/help"}
+NEW_COMMANDS = {"/novo", "/new"}
 
 
 def _preview(text: str, size: int = 160) -> str:
@@ -41,7 +46,7 @@ def run(
     write: Callable[[str], None] = print,
     debug: bool = False,
 ) -> None:
-    """Loop de conversa. `read`/`write` são injetáveis para testes."""
+    """Chat loop. `read`/`write` are injectable for tests."""
     write(BANNER)
     while True:
         try:
@@ -56,10 +61,10 @@ def run(
         if command in EXIT_COMMANDS:
             write("Até mais! 🎶")
             return
-        if command == "/ajuda":
+        if command in HELP_COMMANDS:
             write(HELP)
             continue
-        if command == "/novo":
+        if command in NEW_COMMANDS:
             session.reset()
             write("(nova conversa iniciada)\n")
             continue
@@ -72,17 +77,17 @@ def run(
 
         if debug:
             for call in reply.tool_calls:
-                status = "ERRO" if call.is_error else "ok"
+                status = "ERROR" if call.is_error else "ok"
                 write(f"  [tool] {call.name}({json.dumps(call.input, ensure_ascii=False)}) -> {status}: "
                       f"{_preview(call.output)}")
-            write(f"  [sessão] {session.turns} turno(s), {len(session.history)} mensagens no histórico")
+            write(f"  [session] {session.turns} turn(s), {len(session.history)} messages in history")
             if reply.error:
-                write(f"  [erro] {reply.error}")
+                write(f"  [error] {reply.error}")
         write(f"\nEmpório: {reply.text}\n")
 
 
 def _configure_console() -> None:
-    """Garante UTF-8 no terminal do Windows (acentos e emojis)."""
+    """Forces UTF-8 on the Windows terminal (accents and emojis)."""
     for stream in (sys.stdout, sys.stderr, sys.stdin):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8", errors="replace")
@@ -90,19 +95,19 @@ def _configure_console() -> None:
 
 def main(argv: list[str] | None = None) -> int:
     _configure_console()
-    parser = argparse.ArgumentParser(prog="emporio-chat", description="Atendimento da Empório da Música no terminal.")
-    parser.add_argument("--debug", action="store_true", help="mostra as ferramentas chamadas e logs detalhados")
+    parser = argparse.ArgumentParser(prog="emporio-chat", description="Empório da Música customer service chat.")
+    parser.add_argument("--debug", action="store_true", help="show the tools called and detailed logs")
     args = parser.parse_args(argv)
 
-    # Sem --debug o cliente vê só a mensagem amigável; com --debug, o erro e os logs completos.
+    # Without --debug the customer only sees the friendly message; with --debug, the error and full logs too.
     logging.basicConfig(level=logging.INFO if args.debug else logging.CRITICAL,
                         format="%(levelname)s %(name)s: %(message)s")
 
     if not get_settings().anthropic_api_key:
-        print("ANTHROPIC_API_KEY não configurada. Copie .env.example para .env e preencha a chave.", file=sys.stderr)
+        print("ANTHROPIC_API_KEY is not set. Copy .env.example to .env and fill in the key.", file=sys.stderr)
         return 1
 
-    from emporio_agent.agent import build_agent  # importa aqui para o --help ser rápido
+    from emporio_agent.agent import build_agent  # imported here so --help stays fast
 
     run(ChatSession(build_agent()), debug=args.debug)
     return 0

@@ -1,20 +1,20 @@
-# Segredos
+# Secrets
 .env
 
-# Ambiente Python
+# Python environment
 .venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
 .pytest_cache/
 
-# Artefatos gerados em tempo de execução (banco SQLite)
+# Artifacts generated at runtime (SQLite database)
 storage/
 
-# Enunciado do processo seletivo (documento do recrutador, não faz parte do projeto)
+# Hiring challenge statement (recruiter document, not part of the project)
 desafio_tecnico_ai_eng_artefact.pdf
 
-# Sistema operacional / editores
+# Operating system / editors
 .DS_Store
 Thumbs.db
 .vscode/

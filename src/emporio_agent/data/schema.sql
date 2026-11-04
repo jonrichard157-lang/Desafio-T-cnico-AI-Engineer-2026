@@ -1,5 +1,5 @@
--- Schema do banco operacional da Empório da Música.
--- Gerado a partir dos CSVs em data/ pelo módulo emporio_agent.data.loader.
+-- Schema of Empório da Música's operational database.
+-- Built from the CSVs in data/ by the emporio_agent.data.loader module.
 
 PRAGMA foreign_keys = ON;
 
@@ -19,8 +19,8 @@ CREATE TABLE products (
     description    TEXT,
     specs_json     TEXT NOT NULL DEFAULT '{}',
     created_at     TEXT,
-    -- Texto normalizado (minúsculas, sem acento) de nome + categoria + descrição + specs,
-    -- usado para busca por palavras-chave.
+    -- Normalized text (lowercase, no accents) of name + category + description + specs,
+    -- used for keyword search.
     search_text    TEXT NOT NULL
 );
 
@@ -36,9 +36,9 @@ CREATE TABLE customers (
     customer_id  INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
     phone        TEXT,
-    phone_digits TEXT,           -- telefone só com dígitos, para comparação
+    phone_digits TEXT,           -- phone with digits only, for matching
     email        TEXT,
-    email_norm   TEXT,           -- e-mail em minúsculas, para comparação
+    email_norm   TEXT,           -- lowercase e-mail, for matching
     city         TEXT
 );
 
@@ -60,7 +60,7 @@ CREATE TABLE order_items (
     quantity   INTEGER NOT NULL CHECK (quantity > 0)
 );
 
--- Problemas de qualidade encontrados durante a carga (documentação / auditoria).
+-- Data quality issues found while loading (documentation / audit trail).
 CREATE TABLE data_quality_issues (
     entity    TEXT NOT NULL,
     entity_id TEXT,
@@ -74,12 +74,12 @@ CREATE INDEX idx_order_items_order ON order_items(order_id);
 CREATE INDEX idx_customers_phone ON customers(phone_digits);
 CREATE INDEX idx_customers_email ON customers(email_norm);
 
--- Visão de catálogo: concentra as regras de negócio de preço e disponibilidade
--- num único lugar, para que as ferramentas do agente não as reimplementem.
---   * Disponível para venda = status 'active' E estoque > 0.
---   * Promoção vigente = maior desconto entre as promoções com is_active = 1.
---   * Preço no PIX = 5% de desconto, SOMENTE se não houver promoção vigente
---     (manual, seção 6.2: promoções não são cumulativas).
+-- Catalog view: keeps the pricing and availability business rules in a single
+-- place, so the agent's tools never re-implement them.
+--   * Available for sale = status 'active' AND stock > 0.
+--   * Current promotion = highest discount among promotions with is_active = 1.
+--   * PIX price = 5% off, ONLY when there is no current promotion
+--     (policy manual, section 6.2: promotions do not stack).
 CREATE VIEW product_catalog AS
 WITH best_promo AS (
     SELECT product_id,

@@ -1,14 +1,14 @@
-"""Carga dos CSVs fornecidos pela loja em um banco SQLite tipado.
+"""Loads the store's CSV files into a typed SQLite database.
 
-Por que SQLite?
-  * Os dados são pequenos (dezenas de linhas), relacionais e precisam de filtros
-    exatos (preço máximo, estoque > 0, status do pedido). SQL resolve isso de forma
-    determinística, sem depender do modelo para "ler" tabelas.
-  * Faz parte da biblioteca padrão do Python: zero infraestrutura extra.
-  * As regras de preço/disponibilidade ficam centralizadas na view `product_catalog`.
+Why SQLite?
+  * The data is small (dozens of rows), relational, and needs exact filters
+    (maximum price, stock > 0, order status). SQL answers these deterministically,
+    without relying on the model to "read" tables.
+  * It ships with the Python standard library: zero extra infrastructure.
+  * Pricing/availability rules live in a single place, the `product_catalog` view.
 
-Uso:
-    uv run python -m emporio_agent.data.loader          # (re)constrói o banco e mostra um resumo
+Usage:
+    uv run python -m emporio_agent.data.loader          # (re)builds the database and prints a summary
 """
 
 from __future__ import annotations
@@ -33,14 +33,14 @@ TABLES = ("categories", "products", "promotions", "customers", "orders", "order_
 
 
 # --------------------------------------------------------------------------- #
-# Leitura e conversão
+# Reading and parsing
 # --------------------------------------------------------------------------- #
 def _csv_path(data_dir: Path, table: str) -> Path:
     return data_dir / f"{CSV_PREFIX}{table}.csv"
 
 
 def _read_csv(data_dir: Path, table: str) -> list[dict[str, str]]:
-    # utf-8-sig tolera BOM caso os arquivos sejam reexportados pelo Excel.
+    # utf-8-sig tolerates a BOM in case the files are re-exported from Excel.
     with _csv_path(data_dir, table).open(encoding="utf-8-sig", newline="") as fh:
         return [{k.strip(): (v or "").strip() for k, v in row.items()} for row in csv.DictReader(fh)]
 
@@ -56,18 +56,18 @@ def _parse_specs(raw: str, product_id: str, issues: list[tuple]) -> dict:
         specs = json.loads(raw)
         return specs if isinstance(specs, dict) else {}
     except json.JSONDecodeError:
-        issues.append(("products", product_id, "campo specs com JSON inválido; ignorado"))
+        issues.append(("products", product_id, "specs field has invalid JSON; ignored"))
         return {}
 
 
 # --------------------------------------------------------------------------- #
-# Construção do banco
+# Building the database
 # --------------------------------------------------------------------------- #
 def build_database(data_dir: Path, db_path: Path) -> list[tuple[str, str, str]]:
-    """Cria o banco do zero a partir dos CSVs. Retorna os problemas de qualidade encontrados.
+    """Builds the database from scratch out of the CSVs. Returns the data quality issues found.
 
-    A escrita é feita num arquivo temporário e depois movida, para que um leitor
-    nunca veja um banco pela metade.
+    It writes to a temporary file and then moves it into place, so a reader never
+    sees a half-built database.
     """
     db_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = db_path.with_suffix(".tmp")
@@ -133,52 +133,52 @@ def build_database(data_dir: Path, db_path: Path) -> list[tuple[str, str, str]]:
 
         fk_errors = conn.execute("PRAGMA foreign_key_check").fetchall()
         if fk_errors:
-            raise ValueError(f"Violação de chave estrangeira nos CSVs: {fk_errors}")
+            raise ValueError(f"Foreign key violation in the CSVs: {fk_errors}")
         conn.commit()
     finally:
         conn.close()
 
     os.replace(tmp_path, db_path)
     for entity, entity_id, issue in issues:
-        logger.info("Qualidade de dados [%s %s]: %s", entity, entity_id, issue)
+        logger.info("Data quality [%s %s]: %s", entity, entity_id, issue)
     return issues
 
 
 def _quality_checks(conn: sqlite3.Connection) -> Iterable[tuple[str, str, str]]:
-    """Inconsistências encontradas nos dados. Não bloqueiam a carga, mas são registradas
-    e tratadas explicitamente pelas regras do agente (ver README)."""
+    """Inconsistencies found in the data. They do not block the load, but they are recorded
+    and handled explicitly by the agent's rules (see README)."""
     q = conn.execute
 
     for pid, name in q("SELECT product_id, name FROM products WHERE status='active' AND stock_quantity=0"):
-        yield ("products", str(pid), f"'{name}' está ativo mas sem estoque -> tratado como indisponível")
+        yield ("products", str(pid), f"'{name}' is active but out of stock -> treated as unavailable")
     for pid, name, stock in q("SELECT product_id, name, stock_quantity FROM products "
                               "WHERE status IN ('discontinued','coming_soon') AND stock_quantity>0"):
-        yield ("products", str(pid), f"'{name}' não está ativo mas tem estoque={stock} -> tratado como indisponível")
+        yield ("products", str(pid), f"'{name}' is not active but has stock={stock} -> treated as unavailable")
 
     for pid, n in q("SELECT product_id, COUNT(*) FROM promotions WHERE is_active=1 "
                     "GROUP BY product_id HAVING COUNT(*)>1"):
-        yield ("promotions", str(pid), f"{n} promoções ativas simultâneas -> considera-se o maior desconto")
+        yield ("promotions", str(pid), f"{n} simultaneous active promotions -> the highest discount applies")
 
     for oid, total, items_total in q(
         "SELECT o.order_id, o.total_brl, SUM(p.price_brl * oi.quantity) FROM orders o "
         "JOIN order_items oi ON oi.order_id=o.order_id JOIN products p ON p.product_id=oi.product_id "
         "GROUP BY o.order_id HAVING ABS(o.total_brl - SUM(p.price_brl * oi.quantity)) > 0.01"
     ):
-        yield ("orders", str(oid), f"total do pedido (R$ {total:.2f}) difere da soma dos itens a preço atual "
-                                   f"(R$ {items_total:.2f}) -> prevalece o total registrado no pedido")
+        yield ("orders", str(oid), f"order total (R$ {total:.2f}) differs from the sum of its items at current prices "
+                                   f"(R$ {items_total:.2f}) -> the recorded order total prevails")
 
     for oid, status in q("SELECT order_id, status FROM orders WHERE status IN ('shipped','delivered') "
                          "AND tracking_code IS NULL"):
-        yield ("orders", str(oid), f"pedido '{status}' sem código de rastreio")
+        yield ("orders", str(oid), f"'{status}' order without a tracking code")
 
     emails = Counter(row[0] for row in q("SELECT email_norm FROM customers WHERE email_norm IS NOT NULL"))
     for email, n in emails.items():
         if n > 1:
-            yield ("customers", email, f"e-mail compartilhado por {n} clientes -> e-mail sozinho não identifica o cliente")
+            yield ("customers", email, f"e-mail shared by {n} customers -> e-mail alone does not identify the customer")
 
 
 # --------------------------------------------------------------------------- #
-# Acesso
+# Access
 # --------------------------------------------------------------------------- #
 def _is_stale(data_dir: Path, db_path: Path) -> bool:
     if not db_path.exists():
@@ -189,18 +189,18 @@ def _is_stale(data_dir: Path, db_path: Path) -> bool:
 
 
 def ensure_database(data_dir: Path | None = None, db_path: Path | None = None) -> Path:
-    """Garante que o banco existe e está atualizado em relação aos CSVs."""
+    """Makes sure the database exists and is up to date with the CSVs."""
     settings = get_settings()
     data_dir = data_dir or settings.data_dir
     db_path = db_path or settings.db_path
     if _is_stale(data_dir, db_path):
-        logger.info("Construindo banco de dados em %s", db_path)
+        logger.info("Building database at %s", db_path)
         build_database(data_dir, db_path)
     return db_path
 
 
 def connect_readonly(db_path: Path | None = None) -> sqlite3.Connection:
-    """Conexão SOMENTE LEITURA: as ferramentas do agente nunca alteram dados."""
+    """READ-ONLY connection: the agent's tools never modify data."""
     db_path = ensure_database(db_path=db_path) if db_path is None else db_path
     conn = sqlite3.connect(f"{db_path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False)
     conn.row_factory = sqlite3.Row
@@ -212,12 +212,12 @@ def main() -> None:
     settings = get_settings()
     issues = build_database(settings.data_dir, settings.db_path)
     with connect_readonly(settings.db_path) as conn:
-        print(f"Banco criado em: {settings.db_path}")
+        print(f"Database built at: {settings.db_path}")
         for table in TABLES:
-            print(f"  {table:<12} {conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:>4} linhas")
+            print(f"  {table:<12} {conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0]:>4} rows")
         available = conn.execute("SELECT COUNT(*) FROM product_catalog WHERE is_available").fetchone()[0]
-        print(f"  produtos disponíveis para venda: {available}")
-    print(f"\nProblemas de qualidade registrados ({len(issues)}):")
+        print(f"  products available for sale: {available}")
+    print(f"\nRecorded data quality issues ({len(issues)}):")
     for entity, entity_id, issue in issues:
         print(f"  - [{entity} {entity_id}] {issue}")
 

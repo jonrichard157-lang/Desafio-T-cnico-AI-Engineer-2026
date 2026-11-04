@@ -1,4 +1,8 @@
-"""Ferramenta de consulta ao Manual de Políticas e Procedimentos da loja."""
+"""Tool that queries the store's Policies and Procedures Manual.
+
+The manual is in Portuguese, so the returned section text is Portuguese and free-text
+questions must be written in Portuguese to match its vocabulary.
+"""
 
 from __future__ import annotations
 
@@ -10,60 +14,60 @@ from emporio_agent.policies.manual import TOPICS
 from emporio_agent.tools.base import Tool, ToolContext
 
 TopicName = Literal[
-    "sobre_a_loja", "horario", "pagamento", "trocas_devolucoes", "frete_entrega",
-    "promocoes", "atendimento", "garantia", "privacidade",
+    "about_store", "opening_hours", "payment", "returns_exchanges", "shipping",
+    "promotions", "customer_service", "warranty", "privacy",
 ]
-assert set(TopicName.__args__) == set(TOPICS), "TopicName precisa refletir os tópicos do manual"
+assert set(TopicName.__args__) == set(TOPICS), "TopicName must mirror the manual's topics"
 
 
 class PolicyLookupInput(BaseModel):
-    topico: TopicName | None = Field(
+    topic: TopicName | None = Field(
         default=None,
-        description="Tópico do manual: " + "; ".join(f"{k} = {v[1]}" for k, v in TOPICS.items()) + ".",
+        description="Manual topic: " + "; ".join(f"{k} = {v[1]}" for k, v in TOPICS.items()) + ".",
     )
-    pergunta: str | None = Field(
+    question: str | None = Field(
         default=None,
-        description="Pergunta em texto livre, para quando nenhum tópico se encaixar claramente.",
+        description="Free-text question IN PORTUGUESE, using the manual's vocabulary (e.g. 'reembolso cartão "
+        "parcelado'), for when no topic clearly fits.",
     )
 
     @model_validator(mode="after")
     def _check(self) -> "PolicyLookupInput":
-        if not self.topico and not (self.pergunta and self.pergunta.strip()):
-            raise ValueError("informe topico ou pergunta")
+        if not self.topic and not (self.question and self.question.strip()):
+            raise ValueError("provide topic or question")
         return self
 
 
 def lookup_policy(ctx: ToolContext, params: PolicyLookupInput) -> dict:
     manual = ctx.manual
-    result: dict = {"fonte": f"Manual de Políticas e Procedimentos v{manual.version} ({manual.updated_at})"}
+    result: dict = {"source": f"Policies and Procedures Manual v{manual.version} ({manual.updated_at})"}
 
-    if params.topico:
-        section = manual.section_for_topic(params.topico)
-        result["secoes"] = [{"secao": section.section_id, "titulo": section.title,
-                             "conteudo": manual.render_section(section.section_id)}]
+    if params.topic:
+        section = manual.section_for_topic(params.topic)
+        result["sections"] = [{"section": section.section_id, "title": section.title,
+                               "content": manual.render_section(section.section_id)}]
         return result
 
-    matches = manual.search(params.pergunta or "", k=3)
+    matches = manual.search(params.question or "", k=3)
     if not matches:
-        result["secoes"] = []
-        result["aviso"] = (
-            "Nenhuma seção do manual trata desse assunto. Não invente políticas: informe que vai verificar com a "
-            "equipe ou ofereça os canais de contato da loja."
+        result["sections"] = []
+        result["notice"] = (
+            "No section of the manual covers this subject. Do not make up policies: say you will check with the "
+            "team, or share the store's contact channels."
         )
         return result
-    result["secoes"] = [{"secao": s.section_id, "titulo": s.title, "conteudo": s.render()} for s, _ in matches]
+    result["sections"] = [{"section": s.section_id, "title": s.title, "content": s.render()} for s, _ in matches]
     return result
 
 
 LOOKUP_POLICY = Tool(
-    name="consultar_politicas",
+    name="lookup_policy",
     description=(
-        "Consulta o manual oficial de políticas da loja: endereço e contatos, horário de funcionamento, formas de "
-        "pagamento e parcelamento, trocas e devoluções, frete e entrega, regras de promoções, garantia e "
-        "privacidade. Use SEMPRE antes de responder sobre regras, prazos ou informações institucionais — "
-        "nunca responda de memória. Prefira 'topico'; use 'pergunta' quando nenhum tópico se encaixar."
+        "Queries the store's official policy manual (in Portuguese): address and contacts, opening hours, payment "
+        "methods and installments, exchanges and returns, shipping and delivery, promotion rules, warranty and "
+        "privacy. ALWAYS use it before answering about rules, deadlines or store information — never answer from "
+        "memory. Prefer 'topic'; use 'question' when no topic fits."
     ),
     input_model=PolicyLookupInput,
     handler=lookup_policy,
 )
-

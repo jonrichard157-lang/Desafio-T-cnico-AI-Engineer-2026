@@ -1,317 +1,393 @@
-# Empório da Música — Agente de Atendimento
+# Empório da Música — Customer Service Agent
 
-Protótipo de agente de atendimento por mensagens de texto para a **Empório da Música**, loja (fictícia) de instrumentos musicais em Campo Grande/MS. Desenvolvido para o Desafio Técnico de AI Engineer.
+Prototype of a text-message customer service agent for **Empório da Música**, a (fictional) musical instrument store in Campo Grande/MS, Brazil. Built for the AI Engineer Technical Challenge.
 
-O agente usa **Claude (Anthropic)** com *function calling*. A cada mensagem, o próprio modelo decide se precisa consultar **dados operacionais** (catálogo, estoque, promoções, pedidos, num banco SQLite) ou **políticas da loja** (horários, trocas, pagamento, frete, no manual em PDF processado por seções). Ele responde com a persona definida pelo manual: um amigo que entende de música.
+The agent uses **Claude (Anthropic)** with *function calling*. On every message, the model itself decides whether it needs **operational data** (catalog, stock, promotions, orders, in a SQLite database) or **store policies** (opening hours, exchanges, payment, shipping, from the PDF manual split into sections). It answers with the persona defined by the store's manual: a friend who really knows music.
+
+The code, prompt and documentation are in English. **The agent replies in the customer's language**, with Brazilian Portuguese as the default (the store's audience); the example conversations are in English. The store's own data (catalog and policy manual) stays in Portuguese.
 
 ```text
-Cliente: Quanto custa o Takamine GD20?
-  └─ agente chama detalhes_produto {"nome": "Takamine GD20"}  → R$ 2.199,00 · PIX R$ 2.089,05 · 12x R$ 183,25
-Empório: O Takamine GD20 sai por R$ 2.199,00 ...
+Customer: Quanto custa o Takamine GD20?            ("How much is the Takamine GD20?")
+  └─ agent calls get_product_details {"name": "Takamine GD20"}  → R$ 2.199,00 · PIX R$ 2.089,05 · 12x R$ 183,25
+Empório:  O Takamine GD20 Dreadnought Natural está disponível aqui. 🎸 ...
 ```
 
-## Sumário
+## Contents
 
-1. [Como rodar](#como-rodar)
-2. [Exemplos de interação](#exemplos-de-interação)
-3. [Arquitetura](#arquitetura)
-4. [Decisões técnicas e justificativas](#decisões-técnicas-e-justificativas)
-5. [Tratamento dos dados](#tratamento-dos-dados)
-6. [Manual de políticas (retrieval)](#manual-de-políticas-retrieval)
-7. [Ferramentas do agente](#ferramentas-do-agente)
-8. [Agente: prompt de sistema e tool calling](#agente-prompt-de-sistema-e-tool-calling)
-9. [Interface CLI e histórico](#interface-cli-e-histórico)
-10. [Testes](#testes)
-11. [Suposições](#suposições)
-12. [Limitações conhecidas e próximos passos](#limitações-conhecidas-e-próximos-passos)
-13. [Uso de assistentes de código](#uso-de-assistentes-de-código)
-14. [Estrutura do projeto](#estrutura-do-projeto)
+1. [How to use](#how-to-use)
+2. [Example conversations](#example-conversations)
+3. [Architecture](#architecture)
+4. [Technical decisions](#technical-decisions)
+5. [Development process, step by step](#development-process-step-by-step)
+6. [Data processing](#data-processing)
+7. [Policy manual (retrieval)](#policy-manual-retrieval)
+8. [Agent tools](#agent-tools)
+9. [Agent: system prompt and tool calling](#agent-system-prompt-and-tool-calling)
+10. [CLI and conversation history](#cli-and-conversation-history)
+11. [Tests](#tests)
+12. [Assumptions](#assumptions)
+13. [Known limitations and next steps](#known-limitations-and-next-steps)
+14. [Use of AI coding assistants](#use-of-ai-coding-assistants)
+15. [Project structure](#project-structure)
 
-## Como rodar
+## How to use
 
-**Requisitos:**
+**Requirements:**
 
-- [uv](https://docs.astral.sh/uv/), que gerencia o Python e as dependências.
-- Python 3.11+ (o `uv` instala automaticamente se necessário).
+- [uv](https://docs.astral.sh/uv/), which manages Python and the dependencies.
+- Python 3.11+ (`uv` installs it automatically if needed).
+- An Anthropic API key with credits ([console.anthropic.com](https://console.anthropic.com/)).
+
+**1. Install and configure**
+
 ```bash
-# 1. Instalar dependências (cria o ambiente virtual em .venv)
-uv sync
-
-# 2. Configurar variáveis de ambiente
-cp .env.example .env      # no Windows (PowerShell): Copy-Item .env.example .env
-# edite o .env e preencha ANTHROPIC_API_KEY
-
-# 3. Conversar com o agente no terminal
-uv run emporio-chat
-uv run emporio-chat --debug    # mostra as ferramentas chamadas a cada resposta
-
-# 4. Rodar os testes (não chamam a API: usam um cliente falso)
-uv run pytest
-
-# 5. (opcional) Gerar novamente as conversas de exemplo (chamam a API)
-uv run python examples/generate_examples.py
-
-# 6. (opcional) Ver o relatório de qualidade dos dados e o manual processado
-uv run python -m emporio_agent.data.loader
-uv run python -m emporio_agent.policies.manual
+uv sync                    # creates the virtual environment in .venv and installs dependencies
+cp .env.example .env       # on Windows (PowerShell): Copy-Item .env.example .env
+# edit .env and fill in ANTHROPIC_API_KEY
 ```
 
-O banco SQLite é criado automaticamente na primeira execução e reconstruído quando algum CSV muda.
+**2. Chat with the agent in the terminal**
 
-**Variáveis de ambiente** (todas em [`.env.example`](.env.example)):
+```bash
+uv run emporio-chat            # normal chat
+uv run emporio-chat --debug    # also shows the tools called, history size and detailed errors
+```
 
-| Variável | Padrão | Para que serve |
-|---|---|---|
-| `ANTHROPIC_API_KEY` | — | Chave da API (obrigatória) |
-| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Modelo usado pelo agente; pode ser trocado sem mexer no código |
-| `ANTHROPIC_MAX_TOKENS` | `1024` | Limite de tokens por resposta |
-| `DATA_DIR` / `STORAGE_DIR` | `data` / `storage` | Pasta dos dados de entrada / do banco gerado |
-| `STORE_TIMEZONE` | `America/Campo_Grande` | Fuso da loja (horário de funcionamento e prazos) |
-| `STORE_TODAY` | vazio (data real) | Fixa a data (`AAAA-MM-DD`) ou data e hora (`AAAA-MM-DDTHH:MM`) para reproduzir cenários |
-| `PARTNER_STORES` | vazio | Lojas parceiras indicadas quando pedem acessórios, separadas por `;` |
-
-## Exemplos de interação
-
-As conversas ficam em [`examples/`](examples/). São transcrições de execuções reais, geradas por script e sem edição manual, que mostram as ferramentas chamadas em cada turno:
-
-| Arquivo | Cenário |
-|---|---|
-| [`01_violoes_ate_1000.md`](examples/01_violoes_ate_1000.md) | Violões disponíveis até R\$ 1.000 (busca com teto de preço) |
-| [`02_endereco_horario.md`](examples/02_endereco_horario.md) | Endereço da loja e horário de "amanhã" |
-| [`03_preco_takamine_gd20.md`](examples/03_preco_takamine_gd20.md) | Preço do Takamine GD20, promoção expirada, PIX e parcelamento |
-| [`04_arrependimento_devolucao.md`](examples/04_arrependimento_devolucao.md) | **Caso não trivial:** arrependimento, com verificação do pedido e prazo calculado |
-| [`05_acessorios_fora_do_escopo.md`](examples/05_acessorios_fora_do_escopo.md) | Pedido de cordas, cabo e pedal: recusa educada e retomada |
-
-Detalhes sobre como são gerados (data simulada, reprodutibilidade) estão em [`examples/README.md`](examples/README.md).
-
-## Arquitetura
+Type a message and press Enter. The agent answers in the language you write in (Portuguese by default). For example:
 
 ```text
- Cliente (terminal)
-        │ mensagem
+Você: Quais violões vocês têm até R$ 1000?
+Você: Qual desses é melhor pra iniciante?
+Você: E quanto fica no PIX?
+```
+
+Chat commands: `/novo` or `/new` (start a new conversation), `/ajuda` or `/help`, `/sair` or `/exit` (or Ctrl+C / Ctrl+D).
+
+**3. Run the tests** (they do not call the API: a fake client is used)
+
+```bash
+uv run pytest
+```
+
+**4. Optional commands**
+
+```bash
+uv run python examples/generate_examples.py      # regenerate the example conversations (calls the API)
+uv run python -m emporio_agent.data.loader       # rebuild the database and print the data quality report
+uv run python -m emporio_agent.policies.manual   # print the policy manual as parsed sections
+```
+
+The SQLite database is created automatically on the first run and rebuilt whenever a CSV changes.
+
+**Environment variables** (all listed in [`.env.example`](.env.example)):
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | — | API key (required) |
+| `ANTHROPIC_MODEL` | `claude-sonnet-5-5` | Model used by the agent; can be changed without touching the code |
+| `ANTHROPIC_MAX_TOKENS` | `1024` | Token limit per reply |
+| `DATA_DIR` / `STORAGE_DIR` | `data` / `storage` | Input data folder / generated database folder |
+| `STORE_TIMEZONE` | `America/Campo_Grande` | Store timezone (opening hours and deadlines) |
+| `STORE_TODAY` | empty (real date) | Pins the date (`YYYY-MM-DD`) or date and time (`YYYY-MM-DDTHH:MM`) to reproduce scenarios |
+| `PARTNER_STORES` | empty | Partner stores recommended when customers ask for accessories, separated by `;` |
+
+**Troubleshooting:** if `uv sync` fails with "Access denied" on Windows, a file in `.venv` is locked, often by OneDrive sync or an open editor. Close the processes using the project (or pause OneDrive), delete the `.venv` folder and run `uv sync` again.
+
+## Example conversations
+
+The conversations are in [`examples/`](examples/). They are transcripts of real runs against the API, generated by a script and not edited by hand, and they show the tools called on each turn:
+
+| File | Scenario |
+|---|---|
+| [`01_acoustic_guitars_up_to_1000.md`](examples/01_acoustic_guitars_up_to_1000.md) | Acoustic guitars up to R\$ 1,000 (search with a price cap) |
+| [`02_address_and_opening_hours.md`](examples/02_address_and_opening_hours.md) | Store address and "tomorrow's" opening hours |
+| [`03_takamine_gd20_price.md`](examples/03_takamine_gd20_price.md) | Takamine GD20 price, expired promotion, PIX and installments |
+| [`04_purchase_regret_and_return.md`](examples/04_purchase_regret_and_return.md) | **Non-trivial case:** purchase regret, with order verification and a computed deadline |
+| [`05_accessories_out_of_scope.md`](examples/05_accessories_out_of_scope.md) | Request for strings, a cable and a pedal: polite refusal and back to instruments |
+
+In the examples the customer writes in English and the agent answers in English; the tool calls show the agent still searching the Portuguese catalog with Portuguese terms. How they are generated (simulated date, reproducibility, review) is described in [`examples/README.md`](examples/README.md).
+
+## Architecture
+
+```text
+ Customer (terminal)
+        │ message
         ▼
- interface/cli.py ──► agent/session.py (ChatSession: histórico em memória)
-                              │ histórico + mensagem
+ interface/cli.py ──► agent/session.py (ChatSession: in-memory history)
+                              │ history + message
                               ▼
-                      agent/core.py (loop de tool calling) ◄──► Claude (Messages API)
+                      agent/core.py (tool-calling loop) ◄──► Claude (Messages API)
                               │  tool_use / tool_result         system: agent/prompt.py
                               ▼
-                      tools/ (ToolExecutor: valida com Pydantic e executa)
-            ┌─────────────────┼──────────────────────┬────────────────────┐
-     buscar_produtos   detalhes_produto       consultar_pedido     consultar_politicas
-            └──────── SQLite (somente leitura) ───────┘                    │
-                 storage/emporio.db ◄── data/loader.py ◄── data/*.csv      │
-                                                                           ▼
+                      tools/ (ToolExecutor: validates with Pydantic and runs)
+            ┌─────────────────┼────────────────────────┬──────────────────┐
+     search_products   get_product_details       lookup_order        lookup_policy
+            └──────── SQLite (read-only) ──────────────┘                  │
+                 storage/emporio.db ◄── data/loader.py ◄── data/*.csv     │
+                                                                          ▼
                                         policies/manual.py ◄── data/políticas_da_loja.pdf
 ```
 
-Fluxo de uma mensagem:
+Flow of one message:
 
-1. O CLI repassa a mensagem à `ChatSession`, que junta o histórico da conversa.
-2. O agente envia histórico, prompt de sistema e definições das ferramentas ao Claude.
-3. O modelo responde em texto, ou pede uma ou mais ferramentas (`tool_use`).
-4. As ferramentas são executadas em Python sobre o SQLite ou o manual; os resultados voltam ao modelo como `tool_result`, e o ciclo se repete até a resposta final.
-5. A resposta é exibida e a troca completa, incluindo as ferramentas, entra no histórico.
+1. The CLI passes the message to the `ChatSession`, which adds the conversation history.
+2. The agent sends the history, the system prompt and the tool definitions to Claude.
+3. The model answers with text, or asks for one or more tools (`tool_use`).
+4. The tools run in Python against SQLite or the manual; the results go back to the model as `tool_result`, and the cycle repeats until the final answer.
+5. The answer is shown, and the full exchange, tools included, is added to the history.
 
-## Decisões técnicas e justificativas
+## Technical decisions
 
-| Decisão | Escolha | Por quê |
+| Decision | Choice | Why |
 |---|---|---|
-| **Abordagem do agente** | *Function calling* com ferramentas determinísticas: SQL para dados, seções do manual para políticas | As perguntas da loja são de dois tipos bem distintos: **dados exatos** (preço, estoque, status) e **regras** (trocas, horário). Ferramentas dedicadas deixam o modelo escolher a fonte e garantem que número nenhum venha da "memória" do LLM. |
-| **Dados operacionais** | SQLite + ferramentas com filtros, não RAG nem agente text-to-SQL | "Violão até R\$ 1.000 com estoque" é um filtro exato; busca vetorial é aproximada. Text-to-SQL livre daria ao modelo poder para errar a regra de preço ou expor dados de clientes; com ferramentas fechadas, as regras de negócio e a privacidade ficam no código. |
-| **Retrieval do manual** | Divisão pelas seções numeradas do próprio PDF; busca por tópico ou TF-IDF | O manual tem cerca de 15 mil caracteres e 10 seções. Embeddings + banco vetorial não trariam ganho nesse tamanho, e dividir por seção mantém cada regra inteira e citável (§4.1). |
-| **Modelo e provedor** | Claude Sonnet 5.5 (Anthropic), configurável por `ANTHROPIC_MODEL` | Bom equilíbrio entre seguir instruções com várias regras simultâneas (PIX × promoção, escopo, LGPD), *tool use* confiável (inclusive chamadas em paralelo) e português natural, com custo e latência menores que os do Opus. O projeto começou com o Sonnet 4.5, que deixou de estar disponível para a conta usada; a troca foi só de configuração. |
-| **Framework** | SDK oficial `anthropic`, sem LangChain/LangGraph | Um agente, 4 ferramentas, um loop: o framework traria dependências e camadas de adaptação sem ganho. O loop próprio tem poucas dezenas de linhas, é explícito e é testado com um cliente falso. |
-| **Estratégia de prompt** | Prompt de sistema com persona, regras invioláveis e um mapa de quando usar cada ferramenta; **cálculos no código** | O LLM erra contas e datas; por isso preço PIX, parcelamento e prazos de troca vêm prontos das ferramentas, e o prompt proíbe recalcular. Detalhes [abaixo](#agente-prompt-de-sistema-e-tool-calling). |
-| **Interface** | CLI no terminal | O desafio foca no agente; o CLI é a forma mais rápida de testar e demonstrar. O agente (`ChatSession`) é independente da interface. |
-| **Histórico** | Em memória, por sessão do CLI | Necessário para perguntas de acompanhamento ("E no PIX?"). A persistência entre execuções não agregaria a um protótipo de terminal de um único usuário (ver [limitações](#limitações-conhecidas-e-próximos-passos)). |
-| **Tratamento dos dados** | Validação na carga, normalização para busca, regras de preço numa view SQL, inconsistências registradas | Ver [seção abaixo](#tratamento-dos-dados). |
+| **Agent approach** | *Function calling* with deterministic tools: SQL for data, manual sections for policies | Store questions come in two very different kinds: **exact data** (price, stock, status) and **rules** (exchanges, hours). Dedicated tools let the model pick the source and guarantee that no number comes from the LLM's "memory". |
+| **Operational data** | SQLite + filtered tools; not RAG, and not a text-to-SQL agent | "Acoustic guitar up to R\$ 1,000, in stock" is an exact filter; vector search is approximate. Free-form text-to-SQL would let the model get the pricing rule wrong or expose customer data; with closed tools, business rules and privacy live in code. |
+| **Manual retrieval** | Split on the PDF's own numbered sections; lookup by topic or TF-IDF | The manual is about 15k characters with 10 sections. Embeddings + a vector DB add nothing at this size, and splitting by section keeps each rule whole and citable (section 4.1). |
+| **Model and provider** | Claude Sonnet 5.5 (Anthropic), configurable through `ANTHROPIC_MODEL` | Good balance between following many simultaneous rules (PIX × promotion, scope, LGPD), reliable *tool use* (including parallel calls) and natural Portuguese, with lower cost and latency than Opus. The project started on Sonnet 4.5, which stopped being available for the account; switching was configuration only. |
+| **Framework** | Official `anthropic` SDK, no LangChain/LangGraph | One agent, 4 tools, one loop: a framework would add dependencies and adapter layers for no gain. The custom loop is a few dozen lines, explicit, and tested with a fake client. |
+| **Prompt strategy** | System prompt with persona, non-negotiable rules and a map of when to use each tool; **calculations in code** | LLMs get math and dates wrong; PIX price, installments and exchange deadlines come ready-made from the tools, and the prompt forbids recomputing them. Details [below](#agent-system-prompt-and-tool-calling). |
+| **Language** | Code, prompt, tools and docs in English; the agent replies in the customer's language (pt-BR by default) | English keeps the project readable for any reviewer, and the examples are in English for the same reason. The store's audience writes in Portuguese, so that is the default reply language. Tool search terms always stay in Portuguese because the catalog and the manual are in Portuguese. |
+| **Interface** | Terminal CLI | The challenge focuses on the agent; a CLI is the fastest way to test and demo it. The agent (`ChatSession`) does not depend on the interface. |
+| **History** | In memory, per CLI session | Needed for follow-up questions ("And with PIX?"). Persistence across runs would add little to a single-user terminal prototype (see [limitations](#known-limitations-and-next-steps)). |
+| **Data processing** | Validation on load, normalization for search, pricing rules in a SQL view, recorded inconsistencies | See [Data processing](#data-processing). |
 
-## Tratamento dos dados
+## Development process, step by step
 
-Os CSVs são carregados em um banco **SQLite** (`storage/emporio.db`), gerado por [`loader.py`](src/emporio_agent/data/loader.py) com o schema em [`schema.sql`](src/emporio_agent/data/schema.sql).
+The project was built in phases, each one committed separately, so the Git history follows the steps below.
 
-**Tratamentos aplicados:**
+### 1. Project setup
 
-- Tipagem (preço → `REAL`, estoque → `INTEGER`), `CHECK` nos status e chaves estrangeiras validadas na carga.
-- Campo `specs` (JSON) validado e incluído na busca.
-- `search_text`: nome + categoria + descrição + specs em minúsculas e sem acento, para que "violao" encontre "Violão".
-- Telefone só com dígitos e e-mail em minúsculas, para identificar o cliente independentemente do formato digitado.
-- O banco é **reconstruído automaticamente** quando algum CSV muda, e as ferramentas do agente usam uma conexão **somente leitura**.
+- Python project managed by `uv` (`pyproject.toml` + `uv.lock`), source in `src/emporio_agent/`, tests with `pytest`.
+- Central configuration in [`config.py`](src/emporio_agent/config.py), read from environment variables / `.env`, so model, paths and timezone change without touching code. Secrets stay out of Git (`.gitignore`).
 
-**Regras de negócio centralizadas na view `product_catalog`:**
+### 2. Data ingestion (CSV → SQLite)
 
-| Regra | Origem |
+- Read the six CSVs, profiled them, and loaded them into a typed SQLite schema with foreign keys and `CHECK` constraints.
+- Moved the business rules (availability, current promotion, PIX price that does not stack with promotions) into one SQL view, `product_catalog`, so no tool re-implements them.
+- Wrote automatic data quality checks and recorded every inconsistency found, with the decision taken for each one (see [Data processing](#data-processing)).
+
+### 3. Policy manual (PDF → sections)
+
+- Extracted the PDF with `pypdf` in layout mode, removed page headers/footers, rebuilt tables and wrapped bullets, and split the text on the manual's own section numbers.
+- Added two lookups: by topic (whole section) and by free text (TF-IDF over subsections).
+- Documented the manual's internal contradictions (phone numbers, e-mail, installment rules) and the decision for each one.
+
+### 4. Agent and orchestration (tools + prompt + loop)
+
+- **Tools:** four tools with Pydantic input models (JSON Schema for the API + argument validation) and deterministic handlers. Calculations (PIX, installments, deadlines) and Brazilian money/date formatting happen in code; order lookup includes identity verification (LGPD).
+- **Orchestration choice:** the official Anthropic SDK with a custom loop, instead of LangChain/LangGraph (see [Technical decisions](#technical-decisions)).
+- **System prompt:** persona, non-negotiable rules (availability only through tools, accessories out of scope, PIX does not stack with promotions, privacy), a tool-usage map and the current store date/time. The static part is cached.
+- **Loop:** runs every tool the model asks for (including parallel calls), turns tool errors into `tool_result` errors the model can recover from, caps tool rounds, and falls back to a friendly message if the API fails.
+- **Partner stores:** the manual says to suggest partner stores "when possible" but names none, so they became configurable (`PARTNER_STORES`), empty by default, and the prompt forbids inventing names.
+
+### 5. CLI and conversation history
+
+- `ChatSession` keeps the conversation in memory in the Messages API format, **including tool calls and results**, so a follow-up like "E quanto fica à vista no PIX?" ("and how much with PIX?") reaches the model together with the product and price looked up in the previous turn.
+- The history is trimmed only at the start of a customer turn, never between a `tool_use` and its `tool_result`. A failed turn is not kept.
+- `emporio-chat` CLI with `--debug` mode, chat commands and UTF-8 handling for the Windows terminal.
+
+### 6. Evidence and documentation
+
+- Wrote [`examples/generate_examples.py`](examples/generate_examples.py), which runs five scenarios against the real agent with a pinned date/time and saves unedited transcripts, including tool calls. A scenario is never saved if any turn fails.
+- Generating the examples surfaced two real-world issues: the API key first had no credits, and later the configured model (`claude-sonnet-4-5`) was no longer available to the account (HTTP 404). The default model moved to `claude-sonnet-5-5`.
+- Reviewed every transcript against the data (prices, installments, deadlines, availability). One scenario was regenerated because the agent described the most expensive options as "the cheapest".
+- Removed leftovers of an HTTP API that was never built (a broken `emporio-api` entry point and unused FastAPI/uvicorn dependencies), so the docs only describe what exists.
+
+### 7. English translation
+
+- Translated code comments, docstrings, the system prompt, tool names, tool parameters and tool output keys into English, and rewrote the documentation in English.
+- Kept the fixed customer-facing text in Brazilian Portuguese (fallback messages, chat banner and prompts) and told the model to search the catalog and the manual using Portuguese terms.
+- Changed the language rule from "always reply in Portuguese" to "reply in the customer's language, Portuguese by default", and re-ran the five example conversations with the customer writing in English. Every transcript was re-checked against the data.
+
+## Data processing
+
+The CSVs are loaded into a **SQLite** database (`storage/emporio.db`) by [`loader.py`](src/emporio_agent/data/loader.py), with the schema in [`schema.sql`](src/emporio_agent/data/schema.sql).
+
+**Processing applied:**
+
+- Typing (price → `REAL`, stock → `INTEGER`), `CHECK` constraints on statuses, and foreign keys validated on load.
+- `specs` field (JSON) validated and included in search.
+- `search_text`: name + category + description + specs, lowercase and without accents, so "violao" finds "Violão".
+- Phone numbers stored as digits only and e-mails in lowercase, to identify customers regardless of how they type them.
+- The database is **rebuilt automatically** whenever a CSV changes, and the agent's tools use a **read-only** connection.
+
+**Business rules centralized in the `product_catalog` view:**
+
+| Rule | Source |
 |---|---|
-| Disponível para venda = `status = 'active'` **e** `estoque > 0` | Manual §7.3 ("nunca confirmar disponibilidade sem verificar o estoque") |
-| Só valem promoções com `is_active = 1`; havendo mais de uma, vale o maior desconto | Manual §7.3 ("nunca prometer desconto que não está vigente") |
-| Preço PIX (−5%) só existe quando **não** há promoção ativa | Manual §6.2 (promoções não são cumulativas) |
+| Available for sale = `status = 'active'` **and** `stock > 0` | Manual section 7.3 ("never confirm availability without checking stock") |
+| Only promotions with `is_active = 1` count; with more than one, the highest discount applies | Manual section 7.3 ("never promise a discount that is no longer valid") |
+| The PIX price (−5%) only exists when there is **no** active promotion | Manual section 6.2 (promotions do not stack) |
 
-**Inconsistências encontradas e como foram tratadas** (também ficam registradas na tabela `data_quality_issues`):
+**Inconsistencies found and how they were handled** (also recorded in the `data_quality_issues` table):
 
-| Dado | Problema | Decisão |
+| Data | Problem | Decision |
 |---|---|---|
-| Produto 96 (Giannini GF-3D) | `active`, mas estoque 0 | Indisponível; o agente sugere alternativas |
-| Produto 130 (Kala Barítono) | `coming_soon` com estoque 2 | Indisponível (lançamento ainda não liberado) |
-| Produto 136 (Ibanez Bass 2X) | `discontinued` com estoque 13 | Indisponível (fora de catálogo) |
-| Pedidos 3 e 20 | Total ≠ soma dos itens a preço atual | Vale o total registrado (o preço pode ter mudado ou havia desconto na época) |
-| E-mail `bruno.martins@jmail.com` | Compartilhado por 2 clientes | O e-mail sozinho não basta para identificar o cliente |
+| Product 96 (Giannini GF-3D) | `active` but stock 0 | Unavailable; the agent suggests alternatives |
+| Product 130 (Kala Baritone) | `coming_soon` with stock 2 | Unavailable (launch not released yet) |
+| Product 136 (Ibanez Bass 2X) | `discontinued` with stock 13 | Unavailable (out of the catalog) |
+| Orders 3 and 20 | Total ≠ sum of items at current prices | The recorded total prevails (the price may have changed, or there was a discount at the time) |
+| E-mail `bruno.martins@jmail.com` | Shared by 2 customers | E-mail alone is not enough to identify a customer |
 
-## Manual de políticas (retrieval)
+## Policy manual (retrieval)
 
-O PDF é processado por [`manual.py`](src/emporio_agent/policies/manual.py).
+The PDF is parsed by [`manual.py`](src/emporio_agent/policies/manual.py).
 
-**Estratégia: divisão por seção do próprio documento, sem RAG vetorial.**
+**Strategy: split on the document's own sections, no vector RAG.**
 
-- O manual é curto (cerca de 15 mil caracteres) e já vem organizado em 10 seções numeradas (`1.`, `4.1`, ...). Dividir pela própria numeração mantém cada regra completa. Por exemplo, todo o §4.1 (arrependimento) fica num único trecho, o que blocos de tamanho fixo poderiam quebrar ao meio.
-- Uma busca vetorial exigiria um modelo de embeddings (a Anthropic não oferece um) e um banco vetorial, e não traria ganho real para um documento desse tamanho.
-- O resultado é determinístico e auditável: o agente pode citar "§4.1 Direito de Arrependimento".
+- The manual is short (about 15k characters) and already organized into 10 numbered sections (`1.`, `4.1`, ...). Splitting on its own numbering keeps each rule complete. For example, all of section 4.1 (right of withdrawal) stays in one piece, which fixed-size chunks could cut in half.
+- Vector search would need an embedding model (Anthropic does not offer one) and a vector database, with no real gain for a document this size.
+- The result is deterministic and auditable: the agent can cite "4.1 Direito de Arrependimento".
 
-**Como funciona a extração:**
+**How the extraction works:**
 
-- O `pypdf` em modo `layout` preserva a posição do texto. Isso permite detectar os títulos (`N.` e `N.N` na coluna 0) e as colunas das tabelas, que viram `Coluna | Coluna`.
-- Cabeçalhos e rodapés de página são removidos e os bullets quebrados em várias linhas são reunidos. Listas que continuam na página seguinte (§7.2) ficam inteiras.
+- `pypdf` in `layout` mode preserves text positions. This makes it possible to detect headings (`N.` and `N.N` at column 0) and table columns, which become `Column | Column`.
+- Page headers and footers are removed, and bullets wrapped over several lines are joined. Lists that continue on the next page (section 7.2) stay whole.
 
-**Duas formas de consulta, expostas ao agente pela ferramenta `consultar_politicas`:**
+**Two lookup modes, exposed to the agent by the `lookup_policy` tool:**
 
-1. **Por tópico** (`horario`, `pagamento`, `trocas_devolucoes`, `frete_entrega`, `promocoes`, `garantia`, ...): devolve a seção inteira com as subseções. O tópico é localizado pelo **título** da seção, não pelo número, para resistir a renumerações do manual.
-2. **Por texto livre:** busca por palavras-chave (TF-IDF com normalização de acentos e plurais) nas subseções, para perguntas que não se encaixam num tópico.
+1. **By topic** (`opening_hours`, `payment`, `returns_exchanges`, `shipping`, `promotions`, `warranty`, ...): returns the whole section with its subsections. Topics are matched by section **title**, not number, so they survive a renumbering of the manual.
+2. **By free text:** keyword search (TF-IDF with accent and plural normalization) over subsections, for questions that do not fit a topic. Because the manual is in Portuguese, the tool asks the model to write these questions in Portuguese.
 
-**Inconsistências do manual** (as decisões abaixo estão fixadas no prompt de sistema):
+**Manual inconsistencies** (the decisions below are set in the system prompt):
 
-| Ponto | Conflito | Decisão |
+| Item | Conflict | Decision |
 |---|---|---|
-| Telefone / WhatsApp | §1.2: (67) 3341-4444; §7: (67) 3321-4500 | 3341-4444 como telefone da loja e 3321-4500 como WhatsApp de atendimento (o §7 trata especificamente do canal WhatsApp) |
-| E-mail | Capa: `contato@emporiodamusica.com.br`; §1.2: `contato@empóriodamusica.com.br` | Usar a versão sem acento (domínios com acento são incomuns; o acento parece erro de digitação) |
-| Parcelamento | Tabela §3: "parcela mínima R\$ 100"; §3.1: faixas de R\$ 50 / R\$ 80 / R\$ 100 | Vale o §3.1, que é mais específico |
+| Phone / WhatsApp | Section 1.2: (67) 3341-4444; section 7: (67) 3321-4500 | 3341-4444 as the store phone and 3321-4500 as the customer service WhatsApp (section 7 is specifically about the WhatsApp channel) |
+| E-mail | Cover: `contato@emporiodamusica.com.br`; section 1.2: `contato@empóriodamusica.com.br` | Use the version without the accent (accented domains are unusual; the accent looks like a typo) |
+| Installments | Section 3 table: "minimum installment R\$ 100"; section 3.1: brackets of R\$ 50 / R\$ 80 / R\$ 100 | Section 3.1 applies, as the more specific rule |
 
-## Ferramentas do agente
+## Agent tools
 
-As ferramentas ficam em [`tools/`](src/emporio_agent/tools/). Cada uma tem nome e descrição (o que o modelo lê para decidir quando usá-la), um modelo Pydantic que gera o JSON Schema e **valida os argumentos** antes da execução, e uma função Python determinística.
+The tools live in [`tools/`](src/emporio_agent/tools/). Each one has a name and a description (what the model reads to decide when to use it), a Pydantic model that generates the JSON Schema and **validates the arguments** before running, and a deterministic Python function.
 
-| Ferramenta | Quando o modelo usa | Regras aplicadas no código |
+| Tool | When the model uses it | Rules applied in code |
 |---|---|---|
-| `buscar_produtos` | Perguntas abertas: marca, categoria, faixa de preço ("violão até R\$ 1.000") | Só itens disponíveis por padrão; indisponíveis correspondentes vêm separados |
-| `detalhes_produto` | Um modelo específico: preço, PIX, parcelamento, estoque, especificações | Promoção × PIX não cumulativos; parcelamento do §3.1; alternativas se indisponível (§7.3) |
-| `consultar_pedido` | Status, rastreio, troca, devolução, garantia | Verificação de identidade (LGPD); prazos de arrependimento, troca e garantia calculados para a data de hoje |
-| `consultar_politicas` | Horário, pagamento, trocas, frete, promoções, garantia, dados da loja | Seção do manual por tópico ou busca por texto; avisa quando o manual não cobre o assunto |
+| `search_products` | Open questions: brand, category, price range ("violão até R\$ 1.000") | Only available items by default; matching unavailable items are listed separately |
+| `get_product_details` | One specific model: price, PIX, installments, stock, specs | Promotion × PIX do not stack; installments per section 3.1; alternatives when unavailable (section 7.3) |
+| `lookup_order` | Status, tracking, exchange, return, warranty | Identity verification (LGPD); regret, exchange and warranty deadlines computed for today's date |
+| `lookup_policy` | Opening hours, payment, exchanges, shipping, promotions, warranty, store information | Manual section by topic or text search; flags when the manual does not cover a subject |
 
-**Por que as regras ficam no código e não no prompt:** cálculos (desconto PIX, parcelas, prazos em dias) e formatação (`R$ 1.234,56`, `dd/mm/aaaa`) são feitos em Python, e o modelo só repassa os valores. Isso evita erros de conta e de data do LLM. Erros de argumento ou de execução nunca derrubam a conversa: voltam ao modelo como `tool_result` com `is_error`, para ele corrigir ou explicar ao cliente.
+**Why rules live in code and not in the prompt:** calculations (PIX discount, installments, deadlines in days) and formatting (`R$ 1.234,56`, `dd/mm/yyyy`, the formats customers expect) are done in Python, and the model just passes the values on. This avoids LLM math and date mistakes. Argument or execution errors never break the conversation: they go back to the model as a `tool_result` with `is_error`, so it can fix the call or explain the situation to the customer.
 
-**Privacidade em `consultar_pedido`:** o pedido só é exibido se o cliente informar número do pedido + telefone ou e-mail, ou, sem o número, telefone **e** e-mail. Se a verificação falhar, a resposta é genérica e não revela se o pedido existe. Só o primeiro nome do cliente volta ao modelo, nunca telefone ou e-mail.
+**Catalog language:** category names and search keywords are in Portuguese, as stored in the catalog. The tool descriptions spell this out and map each category to English (for example, "Violões" = acoustic/classical guitars, "Guitarras" = electric guitars), so the English prompt does not confuse them.
 
-## Agente: prompt de sistema e tool calling
+**Privacy in `lookup_order`:** an order is only shown if the customer provides the order number + phone or e-mail, or, without the number, phone **and** e-mail. If verification fails, the answer is generic and does not reveal whether the order exists. Only the customer's first name goes back to the model, never their phone or e-mail.
+
+## Agent: system prompt and tool calling
 
 **Loop** ([`agent/core.py`](src/emporio_agent/agent/core.py)):
 
-1. Envia o histórico, a nova mensagem e as ferramentas ao modelo.
-2. Se a resposta for `tool_use`, executa **todas** as ferramentas pedidas (podem ser várias em paralelo), devolve os `tool_result` e chama o modelo de novo.
-3. Repete até vir uma resposta em texto, com limite de 6 rodadas de ferramentas.
-4. Falha da API, resposta vazia ou limite atingido viram uma mensagem amigável ao cliente, e a troca que falhou não entra no histórico.
+1. Send the history, the new message and the tools to the model.
+2. If the response is `tool_use`, run **all** requested tools (there may be several in parallel), send back the `tool_result` blocks and call the model again.
+3. Repeat until a text answer arrives, with a limit of 6 tool rounds.
+4. An API failure, an empty response or hitting the limit becomes a friendly message to the customer, and the failed exchange is not added to the history.
 
-**Prompt de sistema** ([`agent/prompt.py`](src/emporio_agent/agent/prompt.py)):
+**System prompt** ([`agent/prompt.py`](src/emporio_agent/agent/prompt.py)):
 
-- **Tom de voz:** "amigo que entende de música", informal mas profissional, mensagens curtas de chat (manual §7.1).
-- **Dados só via ferramentas:** nunca informar preço, estoque, disponibilidade, prazos ou políticas de memória. Disponibilidade só é confirmada após consultar o catálogo; se o produto estiver indisponível, o agente oferece alternativas (§7.3).
-- **Escopo:** a loja vende só instrumentos. Pedidos de acessórios (cordas, cabos, pedais, palhetas, amplificadores, cases) são redirecionados com gentileza. Se `PARTNER_STORES` estiver preenchida, o agente indica essas lojas; senão, não cita nenhuma (nunca inventa nomes).
-- **Regras financeiras:** 5% no PIX **não acumula** com promoção ativa; promoção é sempre mostrada com preço original e percentual (§6.2); o modelo não recalcula nem cria descontos, e promoção que não veio da ferramenta não existe.
-- **Privacidade:** pedido só é consultado com os dados de verificação; o agente pede esses dados antes de chamar a ferramenta.
-- **Contatos oficiais:** as divergências do manual (WhatsApp, e-mail, parcelamento) já vêm resolvidas no prompt.
-- **Limites:** o agente não fecha vendas, não reserva produtos e não registra trocas; ele orienta e indica os canais oficiais. Tentativas de alterar as regras pela conversa são ignoradas.
-- **Contexto dinâmico:** data e hora atuais da loja (para avisar quando o cliente escreve fora do horário de atendimento) e as lojas parceiras.
+- **Language:** written in English. The model replies in the customer's language (Brazilian Portuguese by default), keeps prices and dates in the Brazilian format, and always searches the catalog and manual with Portuguese terms.
+- **Tone of voice:** "a friend who really knows music", informal but professional, short chat messages (manual section 7.1).
+- **Data only through tools:** never state prices, stock, availability, deadlines or policies from memory. Availability is only confirmed after checking the catalog; if a product is unavailable, the agent offers alternatives (section 7.3).
+- **Scope:** the store sells instruments only. Requests for accessories (strings, cables, pedals, picks, amplifiers, cases) are kindly redirected. If `PARTNER_STORES` is set, the agent recommends those stores; otherwise it names none (it never makes up names).
+- **Financial rules:** the 5% PIX discount **does not stack** with an active promotion; a promotion is always shown with the original price and percentage (section 6.2); the model never recomputes or creates discounts, and a promotion that did not come from the tool does not exist.
+- **Privacy:** orders are looked up only with the verification data; the agent asks for it before calling the tool.
+- **Official contacts:** the manual's contradictions (WhatsApp, e-mail, installments) are resolved in the prompt.
+- **Limits:** the agent does not close sales, reserve products or register exchanges; it guides the customer and points to the official channels. Attempts to change the rules through the conversation are ignored.
+- **Dynamic context:** the store's current date and time (to tell customers when the team is back if they write outside opening hours) and the partner stores.
 
-O prompt é dividido em seções curtas e imperativas (persona → regras invioláveis → como usar cada ferramenta → situações especiais → formato), e as regras numeradas citam a seção do manual de origem. As **descrições das ferramentas** também fazem parte da estratégia: dizem quando usar cada uma ("use SEMPRE que...") e o que pedir ao cliente antes ("se o cliente não informou esses dados, PEÇA-OS").
+The prompt is split into short, imperative sections (language → persona → non-negotiable rules → how to use each tool → official contacts → special situations → format). The **tool descriptions** are part of the strategy too: they say when to use each tool ("ALWAYS use it when...") and what to ask the customer first ("If the customer has not provided this data, ASK FOR IT").
 
-**Prompt caching:** a parte fixa do prompt (e as definições das ferramentas, que vêm antes dela) é marcada com `cache_control`. A data/hora fica num bloco separado, depois do trecho cacheado, para não invalidar o cache a cada mensagem.
+**Prompt caching:** the static part of the prompt (and the tool definitions, which come before it) is marked with `cache_control`. The date/time lives in a separate block after the cached part, so it does not invalidate the cache on every message.
 
-## Interface CLI e histórico
+## CLI and conversation history
 
 ```bash
-uv run emporio-chat            # conversa normal
-uv run emporio-chat --debug    # mostra as ferramentas chamadas, o tamanho do histórico e erros detalhados
+uv run emporio-chat            # normal chat
+uv run emporio-chat --debug    # shows the tools called, the history size and detailed errors
 ```
 
-Comandos durante a conversa: `/novo` (nova conversa), `/ajuda` e `/sair` (ou Ctrl+C / Ctrl+D).
+Chat commands: `/novo` or `/new` (new conversation), `/ajuda` or `/help`, and `/sair` or `/exit` (or Ctrl+C / Ctrl+D). The chat banner and prompts are in Portuguese for the store's customers, and the agent answers in the customer's language; `--help` and debug output are in English.
 
-**Histórico em memória** ([`agent/session.py`](src/emporio_agent/agent/session.py)): a `ChatSession` guarda a conversa da sessão no formato da Messages API, **incluindo as chamadas de ferramenta e seus resultados**. Por isso perguntas de acompanhamento funcionam: depois de "Quanto custa o violão Yamaha C40?", a pergunta "E quanto fica à vista no PIX?" chega ao modelo junto com o produto consultado e o preço PIX que a ferramenta devolveu.
+**In-memory history** ([`agent/session.py`](src/emporio_agent/agent/session.py)): `ChatSession` keeps the session's conversation in the Messages API format, **including tool calls and their results**. That is why follow-up questions work: after "Quanto custa o violão Yamaha C40?" ("How much is the Yamaha C40?"), the question "E quanto fica à vista no PIX?" ("And how much with PIX?") reaches the model together with the product looked up and the PIX price the tool returned.
 
-- Acima de 60 mensagens, os turnos mais antigos são descartados. O corte é sempre no início de uma pergunta do cliente, para nunca separar uma chamada de ferramenta do seu resultado (a API rejeitaria o histórico).
-- O histórico vive enquanto o CLI estiver aberto.
+- Above 60 messages, the oldest turns are dropped. The cut always happens at the start of a customer question, so a tool call is never separated from its result (the API would reject that history).
+- The history lives as long as the CLI is open.
 
-## Testes
+## Tests
 
 ```bash
 uv run pytest
 ```
 
-Os testes **não chamam a API**: um cliente falso ([`tests/fakes.py`](tests/fakes.py)) devolve respostas roteirizadas, enquanto as ferramentas rodam de verdade sobre o banco gerado dos CSVs. Cobrem:
+The tests **do not call the API**: a fake client ([`tests/fakes.py`](tests/fakes.py)) returns scripted responses, while the tools run for real against the database built from the CSVs. They cover:
 
-- a ingestão dos dados e o processamento do manual;
-- o loop de tool calling: ferramentas em paralelo, argumentos inválidos, falha da API, limite de rodadas;
-- o histórico da sessão, incluindo o cenário "E no PIX?";
-- o CLI e a configuração (data/hora simulada, lojas parceiras).
+- data ingestion and manual parsing;
+- the tool-calling loop: parallel tools, invalid arguments, API failure, round limit;
+- the session history, including the "And with PIX?" scenario;
+- the CLI and the configuration (simulated date/time, partner stores).
 
-Eles verificam a **mecânica** do agente. O comportamento do modelo (escolher a ferramenta certa, seguir as regras) é verificado nas conversas de [`examples/`](examples/), geradas contra a API real.
+They check the agent's **mechanics**. The model's behavior (choosing the right tool, following the rules) is checked in the conversations in [`examples/`](examples/), generated against the real API.
 
-## Suposições
+## Assumptions
 
-Onde os dados ou o enunciado não eram explícitos, as decisões foram:
+Where the data or the challenge statement were not explicit, these were the decisions:
 
-- **Data de recebimento do pedido:** os dados não têm a data real de entrega; para pedidos entregues, usa-se `estimated_delivery` como data de recebimento ao calcular os prazos de 7 dias (arrependimento e troca por preferência) e de 90 dias (garantia legal). A ferramenta informa essa suposição ao modelo.
-- **Significado dos status de pedido:** `pending` = aguardando pagamento; `confirmed` = pago, em separação; `shipped` = em trânsito; `delivered` = entregue; `cancelled` = cancelado.
-- **Promoção vigente** = `is_active = 1` na tabela de promoções (não há datas de início e fim); com mais de uma ativa no mesmo produto, vale a maior.
-- **Acessórios:** a lista do manual (cordas, palhetas, cabos, cases, pedais, amplificadores) é tratada como exemplo; itens equivalentes (afinador, capa, baqueta avulsa) também são recusados.
-- **Lojas parceiras:** o manual pede para sugeri-las "quando possível", mas não diz quais são. Ficaram configuráveis e vêm vazias por padrão.
-- **Feriados:** o manual diz que a loja fecha em feriados, mas não os lista; o agente não tem um calendário de feriados.
+- **Order receipt date:** the data has no actual delivery date; for delivered orders, `estimated_delivery` is used as the receipt date when computing the 7-day (regret and exchange by preference) and 90-day (legal warranty) deadlines. The tool tells the model about this assumption.
+- **Meaning of order statuses:** `pending` = waiting for payment; `confirmed` = paid, being prepared; `shipped` = in transit; `delivered` = delivered; `cancelled` = cancelled.
+- **Current promotion** = `is_active = 1` in the promotions table (there are no start/end dates); with more than one active on the same product, the highest applies.
+- **Accessories:** the manual's list (strings, picks, cables, cases, pedals, amplifiers) is treated as examples; equivalent items (tuners, gig bags, loose drumsticks) are also declined.
+- **Partner stores:** the manual asks to suggest them "when possible" but does not name any. They are configurable and empty by default.
+- **Holidays:** the manual says the store closes on holidays but does not list them; the agent has no holiday calendar.
 
-## Limitações conhecidas e próximos passos
+## Known limitations and next steps
 
-**Limitações:**
+**Limitations:**
 
-- **Sem persistência entre execuções:** o histórico some ao fechar o CLI, e há uma única conversa por vez (sem múltiplos usuários).
-- **O agente não executa ações:** não reserva produtos, não abre solicitações de troca e não registra reclamações (o manual pede registro e retorno em 24h). Ele orienta e encaminha aos canais oficiais.
-- **Busca de produtos por palavras-chave:** pedidos subjetivos ("algo com som mais quente", "para tocar MPB") dependem de o modelo traduzi-los em filtros; não há busca semântica no catálogo.
-- **Verificação de identidade simples:** número do pedido + e-mail é um fator fraco; num canal real, seria melhor um código enviado ao telefone cadastrado.
-- **Frete:** sem cotação por CEP (o manual diz que é calculado no checkout); o agente só informa as modalidades e os prazos estimados.
-- **Sem avaliação automatizada do comportamento do LLM:** os testes cobrem a mecânica; a qualidade das respostas foi verificada nos exemplos, não com uma suíte de avaliação.
-- **Histórico longo:** além de 60 mensagens, os turnos antigos são descartados, e não resumidos.
-- **Dependência de um único provedor:** sem fallback automático para outro modelo ou provedor se a API da Anthropic falhar; o agente responde com uma mensagem amigável e indica os canais da loja.
+- **No persistence across runs:** the history is lost when the CLI closes, and there is a single conversation at a time (no multiple users).
+- **The agent takes no actions:** it does not reserve products, open exchange requests or register complaints (the manual asks for complaints to be registered and answered within 24h). It guides the customer and points to the official channels.
+- **Keyword product search:** subjective requests ("something with a warmer sound", "for playing MPB") depend on the model turning them into filters, and search terms must be in Portuguese (the model translates them when the customer writes in another language); there is no semantic search over the catalog.
+- **Fixed messages are Portuguese only:** the agent's replies follow the customer's language, but the fallback messages (API failure) and the CLI banner are always in Portuguese.
+- **Simple identity verification:** order number + e-mail is a weak factor; on a real channel, a code sent to the registered phone would be better.
+- **Shipping:** no quote by ZIP code (the manual says it is calculated at checkout); the agent only gives the shipping options and estimated delivery times.
+- **No automated evaluation of LLM behavior:** the tests cover the mechanics; answer quality was checked in the examples, not with an evaluation suite.
+- **Long conversations:** beyond 60 messages, old turns are dropped rather than summarized.
+- **Single provider:** no automatic fallback to another model or provider if the Anthropic API fails; the agent replies with a friendly message and shares the store's contacts.
 
-**Com mais tempo, eu faria:**
+**With more time, I would build:**
 
-1. **Suíte de avaliação (evals):** um conjunto de perguntas com respostas esperadas (ferramenta correta, valores corretos, recusa de acessórios, não vazar dados), rodado a cada mudança de prompt ou modelo, com checagens determinísticas e um LLM como juiz para o tom.
-2. **API HTTP + persistência** de sessões (SQLite ou Redis), para integrar com um canal real como o WhatsApp Business.
-3. **Handoff para humano e ações reais:** ferramentas para registrar reclamações e solicitações de troca, e transferir a conversa à equipe com um resumo.
-4. **Busca híbrida no catálogo:** palavras-chave + embeddings, para pedidos subjetivos.
-5. **Observabilidade:** registrar por conversa as ferramentas chamadas, a latência, os tokens e a taxa de acerto do cache, para acompanhar custo e qualidade em produção.
-6. **Calendário de feriados e horários especiais**, e resposta automática fora do expediente.
+1. **An evaluation suite (evals):** a set of questions with expected outcomes (right tool, right values, accessory refusal, no data leaks), run on every prompt or model change, with deterministic checks plus an LLM judge for tone.
+2. **An HTTP API + session persistence** (SQLite or Redis), to plug into a real channel such as WhatsApp Business.
+3. **Human handoff and real actions:** tools to register complaints and exchange requests, and to hand the conversation over to the team with a summary.
+4. **Hybrid catalog search:** keywords + embeddings, for subjective requests.
+5. **Observability:** log per conversation the tools called, latency, tokens and cache hit rate, to track cost and quality in production.
+6. **A holiday and special-hours calendar**, plus automatic replies outside opening hours.
 
-## Uso de assistentes de código
+## Use of AI coding assistants
 
-Usei o **Claude Code** (extensão do VS Code) como par de programação ao longo do projeto. O fluxo de trabalho foi:
+I used **Claude Code** (VS Code extension) as a pair programmer throughout the project. The workflow was:
 
-1. **Divisão em fases:** quebrei o desafio em etapas (setup → dados → manual → ferramentas → agente → CLI → exemplos e documentação) e passei ao assistente uma especificação curta de cada fase.
-2. **Decisões ficaram comigo:** quando havia escolha de produto ou arquitetura, o assistente levantava as opções com prós e contras e eu decidia. Exemplos: SDK nativo × LangGraph, qual modelo usar, o que fazer com lojas parceiras não especificadas no manual.
-3. **Implementação com testes:** o assistente lia o código existente, implementava a fase e escrevia os testes; eu revisava o diff, rodava o projeto e fazia o **commit de cada fase manualmente**. Por isso o histórico do Git acompanha as etapas.
-4. **Revisão cruzada:** pedi verificações de consistência entre código e documentação. Por exemplo, uma revisão encontrou o número de WhatsApp errado na mensagem de erro, divergente da decisão documentada sobre as inconsistências do manual.
-5. **Exemplos não escritos à mão:** as conversas em `examples/` são geradas por script contra a API real, para que reflitam o comportamento verdadeiro do agente.
+1. **Phases:** I split the challenge into steps (setup → data → manual → tools and agent → CLI → examples and docs → English translation) and gave the assistant a short spec for each phase.
+2. **Decisions stayed with me:** when there was a product or architecture choice, the assistant laid out the options with pros and cons and I decided. Examples: native SDK × LangGraph, which model to use, what to do about partner stores the manual does not name, and how far the English translation should go.
+3. **Implementation with tests:** the assistant read the existing code, implemented the phase and wrote the tests; I reviewed the diff, ran the project and **committed each phase myself**. That is why the Git history follows the steps.
+4. **Cross-checks:** I asked for consistency checks between code and documentation. For example, one review found the wrong WhatsApp number in the error message, contradicting the documented decision about the manual's inconsistencies.
+5. **Examples not written by hand:** the conversations in `examples/` are generated by a script against the real API, so they reflect the agent's actual behavior, and each one was checked against the data before being kept.
 
-## Estrutura do projeto
+## Project structure
 
 ```text
 .
-├── data/                     # Dados fornecidos pela loja (CSVs + manual em PDF)
+├── data/                     # Data provided by the store (CSVs + PDF manual, in Portuguese)
 ├── src/emporio_agent/
-│   ├── config.py             # Configuração via variáveis de ambiente
-│   ├── text.py               # Normalização de texto (acentos, dígitos)
-│   ├── data/                 # Ingestão dos CSVs → SQLite (schema + loader)
-│   ├── policies/             # Processamento do manual em PDF → seções
-│   ├── tools/                # Ferramentas expostas ao modelo (catálogo, pedidos, políticas)
-│   ├── agent/                # Prompt de sistema, loop de tool calling, sessão/histórico
+│   ├── config.py             # Configuration from environment variables
+│   ├── text.py               # Text normalization (accents, digits)
+│   ├── data/                 # CSV → SQLite ingestion (schema + loader)
+│   ├── policies/             # PDF manual → sections
+│   ├── tools/                # Tools exposed to the model (catalog, orders, policies)
+│   ├── agent/                # System prompt, tool-calling loop, session/history
 │   └── interface/            # CLI
-├── tests/                    # Testes (pytest), com cliente falso da API
-├── examples/                 # Conversas de exemplo + script que as gera
-├── storage/                  # Banco SQLite gerado (não versionado)
+├── tests/                    # Tests (pytest), with a fake API client
+├── examples/                 # Example conversations + the script that generates them
+├── storage/                  # Generated SQLite database (not versioned)
 ├── .env.example
 └── pyproject.toml
 ```

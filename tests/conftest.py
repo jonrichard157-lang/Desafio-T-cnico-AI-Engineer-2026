@@ -1,4 +1,4 @@
-"""Fixtures compartilhadas pelos testes."""
+"""Fixtures shared by the tests."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from emporio_agent.tools import ALL_TOOLS, ToolContext, ToolExecutor
 
 @pytest.fixture(scope="session")
 def db_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
-    """Banco construído a partir dos CSVs reais, num diretório temporário."""
+    """Database built from the real CSVs, in a temporary directory."""
     path = tmp_path_factory.mktemp("db") / "emporio.db"
     build_database(PROJECT_ROOT / "data", path)
     return path
@@ -38,4 +38,4 @@ def executor(conn) -> ToolExecutor:
 
 @pytest.fixture()
 def settings():
-    return replace(get_settings(), anthropic_model="modelo-teste", partner_stores=("Loja Parceira X",))
+    return replace(get_settings(), anthropic_model="test-model", partner_stores=("Partner Store X",))

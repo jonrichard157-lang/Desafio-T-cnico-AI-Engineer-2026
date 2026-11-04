@@ -1,9 +1,9 @@
-"""Sessão de conversa com histórico em memória.
+"""Conversation session with in-memory history.
 
-Guarda o histórico no formato da Messages API (incluindo tool_use/tool_result),
-para que perguntas de acompanhamento ("E no PIX, quanto fica?") tenham o
-contexto do turno anterior: o modelo vê qual produto foi consultado e os dados
-que a ferramenta devolveu.
+Keeps the history in the Messages API format (including tool_use/tool_result), so
+follow-up questions ("E no PIX, quanto fica?" / "And with PIX, how much?") have
+the previous turn's context: the model sees which product was looked up and the
+data the tool returned.
 """
 
 from __future__ import annotations
@@ -12,15 +12,15 @@ from dataclasses import dataclass, field
 
 from emporio_agent.agent.core import Agent, AgentReply
 
-# Limite de mensagens mantidas no histórico (cada turno com ferramenta usa ~4).
+# Maximum number of messages kept in the history (a turn with tools uses ~4).
 MAX_HISTORY_MESSAGES = 60
 
 
 def trim_history(messages: list[dict], limit: int = MAX_HISTORY_MESSAGES) -> list[dict]:
-    """Descarta os turnos mais antigos, cortando sempre no início de um turno do cliente.
+    """Drops the oldest turns, always cutting at the start of a customer turn.
 
-    O corte nunca separa um `tool_use` do seu `tool_result`: o histórico recomeça
-    numa mensagem de usuário com texto (não numa lista de tool_result).
+    The cut never separates a `tool_use` from its `tool_result`: the history restarts
+    at a user message with text (not at a list of tool_result blocks).
     """
     if len(messages) <= limit:
         return messages
@@ -47,5 +47,5 @@ class ChatSession:
 
     @property
     def turns(self) -> int:
-        """Quantidade de mensagens do cliente no histórico."""
+        """Number of customer messages in the history."""
         return sum(1 for m in self.history if m["role"] == "user" and isinstance(m["content"], str))

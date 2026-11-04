@@ -1,4 +1,4 @@
-"""Testes da configuração (data/hora simulada da loja)."""
+"""Configuration tests (simulated store date/time)."""
 
 from __future__ import annotations
 
@@ -22,5 +22,5 @@ def test_now_uses_simulated_date_and_time_in_store_timezone() -> None:
 
 
 def test_partner_stores_split() -> None:
-    assert _split_list(" Loja A - (67) 1111-1111 ; ;Loja B ") == ("Loja A - (67) 1111-1111", "Loja B")
+    assert _split_list(" Store A - (67) 1111-1111 ; ;Store B ") == ("Store A - (67) 1111-1111", "Store B")
     assert _split_list("") == ()

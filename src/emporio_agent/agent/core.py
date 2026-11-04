@@ -1,13 +1,15 @@
-"""Loop de tool calling do agente, usando a Messages API da Anthropic diretamente.
+"""The agent's tool-calling loop, using Anthropic's Messages API directly.
 
-Fluxo de uma mensagem do cliente:
-  1. Envia histórico + mensagem nova + tools ao modelo.
-  2. Se o modelo pedir ferramentas (`stop_reason == "tool_use"`), executa todas,
-     devolve os `tool_result` e chama o modelo de novo.
-  3. Repete até o modelo responder em texto, ou até o limite de rodadas.
+Flow for one customer message:
+  1. Send history + new message + tools to the model.
+  2. If the model asks for tools (`stop_reason == "tool_use"`), run all of them,
+     send back the `tool_result` blocks and call the model again.
+  3. Repeat until the model answers with text, or the round limit is reached.
 
-O histórico é mantido como lista de dicts JSON-serializáveis (formato da API),
-para poder ser persistido por sessão nas interfaces (CLI/API).
+The history is kept as a list of JSON-serializable dicts (the API format), so an
+interface can store it per session.
+
+Fallback messages are shown to customers, so they are in Brazilian Portuguese.
 """
 
 from __future__ import annotations
@@ -39,7 +41,7 @@ FALLBACK_TOO_MANY_STEPS = (
 
 @dataclass
 class ToolCall:
-    """Registro de uma chamada de ferramenta (para logs, testes e depuração)."""
+    """Record of one tool call (for logs, tests and debugging)."""
 
     name: str
     input: dict
@@ -50,18 +52,18 @@ class ToolCall:
 @dataclass
 class AgentReply:
     text: str
-    messages: list[dict]                       # histórico completo, já com esta troca
+    messages: list[dict]                       # full history, including this exchange
     tool_calls: list[ToolCall] = field(default_factory=list)
-    error: str | None = None                   # preenchido quando houve fallback
+    error: str | None = None                   # set when a fallback reply was used
 
 
 def _block_to_dict(block: Any) -> dict | None:
-    """Converte um bloco de conteúdo da resposta em dict aceito de volta pela API."""
+    """Converts a response content block into a dict the API accepts back."""
     if block.type == "text":
         return {"type": "text", "text": block.text}
     if block.type == "tool_use":
         return {"type": "tool_use", "id": block.id, "name": block.name, "input": block.input}
-    return None  # outros tipos (ex.: thinking) não são usados neste agente
+    return None  # other types (e.g. thinking) are not used by this agent
 
 
 def _text_of(content: list[dict]) -> str:
@@ -92,10 +94,10 @@ class Agent:
         )
 
     def reply(self, user_message: str, history: list[dict] | None = None) -> AgentReply:
-        """Processa uma mensagem do cliente e devolve a resposta e o histórico atualizado.
+        """Processes one customer message and returns the reply and the updated history.
 
-        `history` não é modificado; em caso de erro, o histórico devolvido não inclui
-        a troca que falhou (para não deixar um `tool_use` sem `tool_result`).
+        `history` is not modified; on error, the returned history leaves out the failed
+        exchange (so no `tool_use` is ever left without its `tool_result`).
         """
         base = list(history or [])
         messages = base + [{"role": "user", "content": user_message}]
@@ -105,7 +107,7 @@ class Agent:
             try:
                 response = self._create(messages)
             except anthropic.APIError as exc:
-                logger.exception("Falha na chamada ao modelo")
+                logger.exception("Model call failed")
                 return AgentReply(FALLBACK_ERROR, base, calls, error=f"{type(exc).__name__}: {exc}")
 
             content = [d for d in map(_block_to_dict, response.content) if d]
@@ -113,10 +115,10 @@ class Agent:
 
             if response.stop_reason != "tool_use":
                 if response.stop_reason == "max_tokens":
-                    logger.warning("Resposta truncada por max_tokens")
+                    logger.warning("Reply truncated by max_tokens")
                 text = _text_of(content)
                 if not text:
-                    return AgentReply(FALLBACK_ERROR, base, calls, error="resposta vazia do modelo")
+                    return AgentReply(FALLBACK_ERROR, base, calls, error="empty reply from the model")
                 return AgentReply(text, messages, calls)
 
             results = []
@@ -124,7 +126,7 @@ class Agent:
                 if block["type"] != "tool_use":
                     continue
                 result = self.executor.execute(block["name"], block["input"])
-                logger.info("tool %s(%s) -> erro=%s", block["name"], json.dumps(block["input"], ensure_ascii=False),
+                logger.info("tool %s(%s) -> error=%s", block["name"], json.dumps(block["input"], ensure_ascii=False),
                             result.is_error)
                 calls.append(ToolCall(block["name"], block["input"], result.content, result.is_error))
                 results.append({
@@ -135,12 +137,12 @@ class Agent:
                 })
             messages.append({"role": "user", "content": results})
 
-        logger.warning("Limite de %d rodadas de ferramentas atingido", self.max_tool_rounds)
-        return AgentReply(FALLBACK_TOO_MANY_STEPS, base, calls, error="limite de rodadas de ferramentas")
+        logger.warning("Tool round limit (%d) reached", self.max_tool_rounds)
+        return AgentReply(FALLBACK_TOO_MANY_STEPS, base, calls, error="tool round limit reached")
 
 
 def build_agent(client: Any | None = None) -> Agent:
-    """Agente com as dependências reais (banco, manual e cliente da Anthropic)."""
+    """Agent wired with its real dependencies (database, manual and Anthropic client)."""
     from emporio_agent.tools import build_executor
 
     return Agent(build_executor(), client=client)
