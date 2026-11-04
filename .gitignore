@@ -8,7 +8,7 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
-# Artefatos gerados em tempo de execução (banco SQLite, histórico de sessões)
+# Artefatos gerados em tempo de execução (banco SQLite)
 storage/
 
 # Enunciado do processo seletivo (documento do recrutador, não faz parte do projeto)

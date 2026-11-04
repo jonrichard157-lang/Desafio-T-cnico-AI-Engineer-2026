@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, time
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -28,19 +28,13 @@ class Settings:
     storage_dir: Path
     store_timezone: str
     store_today: date | None
+    store_time: time | None
     partner_stores: tuple[str, ...]
-    api_host: str
-    api_port: int
 
     @property
     def db_path(self) -> Path:
         """Banco SQLite com os dados operacionais (produtos, pedidos, ...)."""
         return self.storage_dir / "emporio.db"
-
-    @property
-    def sessions_db_path(self) -> Path:
-        """Banco SQLite com o histórico de conversas por sessão."""
-        return self.storage_dir / "sessions.db"
 
     @property
     def policies_pdf(self) -> Path:
@@ -56,10 +50,24 @@ class Settings:
                 month=self.store_today.month,
                 day=self.store_today.day,
             )
+        if self.store_time:
+            current = current.replace(hour=self.store_time.hour, minute=self.store_time.minute,
+                                      second=0, microsecond=0)
         return current
 
     def today(self) -> date:
         return self.now().date()
+
+
+def _parse_store_today(raw: str) -> tuple[date | None, time | None]:
+    """'2026-02-20' -> (data, None); '2026-02-20T10:30' -> (data, hora)."""
+    raw = raw.strip()
+    if not raw:
+        return None, None
+    if "T" in raw or " " in raw:
+        moment = datetime.fromisoformat(raw)
+        return moment.date(), moment.time()
+    return date.fromisoformat(raw), None
 
 
 def _split_list(raw: str) -> tuple[str, ...]:
@@ -70,17 +78,16 @@ def _split_list(raw: str) -> tuple[str, ...]:
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     load_dotenv(PROJECT_ROOT / ".env")
-    today_raw = os.getenv("STORE_TODAY", "").strip()
+    store_today, store_time = _parse_store_today(os.getenv("STORE_TODAY", ""))
     return Settings(
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
-        anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+        anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5"),
         anthropic_max_tokens=int(os.getenv("ANTHROPIC_MAX_TOKENS", "1024")),
         data_dir=_resolve(os.getenv("DATA_DIR", "data")),
         storage_dir=_resolve(os.getenv("STORAGE_DIR", "storage")),
         store_timezone=os.getenv("STORE_TIMEZONE", "America/Campo_Grande"),
-        store_today=date.fromisoformat(today_raw) if today_raw else None,
+        store_today=store_today,
+        store_time=store_time,
         partner_stores=_split_list(os.getenv("PARTNER_STORES", "")),
-        api_host=os.getenv("API_HOST", "127.0.0.1"),
-        api_port=int(os.getenv("API_PORT", "8000")),
     )
 
