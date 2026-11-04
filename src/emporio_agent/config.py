@@ -28,6 +28,7 @@ class Settings:
     storage_dir: Path
     store_timezone: str
     store_today: date | None
+    partner_stores: tuple[str, ...]
     api_host: str
     api_port: int
 
@@ -61,6 +62,11 @@ class Settings:
         return self.now().date()
 
 
+def _split_list(raw: str) -> tuple[str, ...]:
+    """'Loja A - (67) 1111-1111; Loja B' -> ('Loja A - (67) 1111-1111', 'Loja B')"""
+    return tuple(item.strip() for item in raw.split(";") if item.strip())
+
+
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     load_dotenv(PROJECT_ROOT / ".env")
@@ -73,6 +79,7 @@ def get_settings() -> Settings:
         storage_dir=_resolve(os.getenv("STORAGE_DIR", "storage")),
         store_timezone=os.getenv("STORE_TIMEZONE", "America/Campo_Grande"),
         store_today=date.fromisoformat(today_raw) if today_raw else None,
+        partner_stores=_split_list(os.getenv("PARTNER_STORES", "")),
         api_host=os.getenv("API_HOST", "127.0.0.1"),
         api_port=int(os.getenv("API_PORT", "8000")),
     )

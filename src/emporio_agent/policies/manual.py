@@ -54,7 +54,7 @@ TOPICS: dict[str, tuple[str, str]] = {
 _STOPWORDS = set(
     "a o e de da do das dos em no na nos nas um uma para por com sem que se ao aos as os "
     "eu meu minha voces voce vcs vc qual quais como quando onde ser ter tem posso pode "
-    "loja emporio musica e ou mais muito sobre isso esse essa este esta".split()
+    "loja emporio musica e ou mais muito sobre isso esse essa este esta entre ate apos".split()
 )
 
 
@@ -146,8 +146,13 @@ class PolicyManual:
 # Parsing
 # --------------------------------------------------------------------------- #
 def _tokenize(text: str) -> list[str]:
+    """Tokens normalizados com um radical bem simples.
+
+    Plurais são reduzidos ("trocas" -> "troca") e palavras longas são truncadas em
+    5 letras, aproximando flexões de uma mesma raiz: "arrependi" ~ "arrependimento",
+    "devolver" ~ "devolução", "parcelar" ~ "parcelamento".
+    """
     tokens = re.findall(r"[a-z0-9]+", normalize_text(text))
-    # Radical simples (plural): "trocas" ~ "troca", "devolucoes" ~ "devolucao".
     stemmed = []
     for tok in tokens:
         if tok in _STOPWORDS or len(tok) < 2:
@@ -156,7 +161,7 @@ def _tokenize(text: str) -> list[str]:
             tok = tok[:-4] + "cao"
         elif tok.endswith("s") and len(tok) > 3:
             tok = tok[:-1]
-        stemmed.append(tok)
+        stemmed.append(tok[:5])
     return stemmed
 
 
