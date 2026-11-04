@@ -29,7 +29,7 @@ MAX_TOOL_ROUNDS = 6
 
 FALLBACK_ERROR = (
     "Poxa, tive um probleminha técnico aqui e não consegui consultar o sistema agora. 😕 "
-    "Pode tentar de novo em instantes? Se preferir, fale com a equipe pelo WhatsApp (67) 3341-4444."
+    "Pode tentar de novo em instantes? Se preferir, fale com a equipe pelo WhatsApp (67) 3321-4500."
 )
 FALLBACK_TOO_MANY_STEPS = (
     "Desculpa, não consegui concluir essa consulta. Pode me contar de novo, de um jeito mais direto, "

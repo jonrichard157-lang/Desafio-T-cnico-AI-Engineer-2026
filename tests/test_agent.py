@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import replace
-from datetime import date, datetime
-from types import SimpleNamespace
+from datetime import datetime
 
 import anthropic
 import httpx
@@ -14,49 +12,8 @@ import pytest
 from emporio_agent.agent import Agent, build_system
 from emporio_agent.agent.core import FALLBACK_ERROR, FALLBACK_TOO_MANY_STEPS
 from emporio_agent.agent.prompt import STATIC_PROMPT, build_context_block
-from emporio_agent.config import get_settings
-from emporio_agent.policies.manual import load_manual
-from emporio_agent.tools import ALL_TOOLS, ToolContext, ToolExecutor
-
-
-# --------------------------------------------------------------------------- #
-# Cliente falso: devolve respostas roteirizadas e guarda as requisições
-# --------------------------------------------------------------------------- #
-def text(t: str) -> SimpleNamespace:
-    return SimpleNamespace(type="text", text=t)
-
-
-def tool_use(id_: str, name: str, input_: dict) -> SimpleNamespace:
-    return SimpleNamespace(type="tool_use", id=id_, name=name, input=input_)
-
-
-def response(*blocks: SimpleNamespace, stop: str = "end_turn") -> SimpleNamespace:
-    return SimpleNamespace(content=list(blocks), stop_reason=stop)
-
-
-class FakeClient:
-    def __init__(self, responses: list) -> None:
-        self._responses = list(responses)
-        self.requests: list[dict] = []
-        self.messages = self
-
-    def create(self, **kwargs):
-        self.requests.append(json.loads(json.dumps(kwargs, default=str)))  # cópia do estado no momento
-        item = self._responses.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
-
-
-@pytest.fixture()
-def executor(conn) -> ToolExecutor:
-    context = ToolContext(conn=conn, manual=load_manual(), today=lambda: date(2026, 3, 10))
-    return ToolExecutor(ALL_TOOLS, context)
-
-
-@pytest.fixture()
-def settings():
-    return replace(get_settings(), anthropic_model="modelo-teste", partner_stores=("Loja Parceira X",))
+from emporio_agent.tools import ALL_TOOLS, ToolExecutor
+from tests.fakes import FakeClient, response, text, tool_use
 
 
 def make_agent(executor, settings, responses, **kwargs) -> tuple[Agent, FakeClient]:
@@ -74,6 +31,8 @@ def test_prompt_has_core_rules() -> None:
     for accessory in ("cordas", "cabos", "pedais"):
         assert accessory in lowered
     assert "5%" in STATIC_PROMPT and "não acumula com promoção" in lowered
+    # divergências do manual resolvidas no prompt (ver README)
+    assert "(67) 3321-4500" in STATIC_PROMPT and "contato@emporiodamusica.com.br" in STATIC_PROMPT
 
 
 def test_system_caches_static_part_and_adds_context() -> None:
